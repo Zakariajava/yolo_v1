@@ -92,3 +92,15 @@ class Yolov1(nn.Module):
                 # storing the output channels of the previous block as input channels to be used in the next iteration
                 in_channels = conv2[1] 
         return nn.Sequential(*layers)
+
+    def _create_fcs(self, split_size, num_boxes, num_classes):
+        # split_size (S): grid size, image is divided into S x S cells
+        # num_boxes (B): bounding boxes predicted per cell
+        # num_classes (C): number of object classes in the dataset 
+        S, B, C = split_size, num_boxes, num_classes
+        
+        fc1 = nn.Linear(1024 * S * S, 4096)
+        dropout = nn.Dropout(0.5)
+        activation = nn.LeakyReLU(0.1)
+        fc2 = nn.Linear(4096, S * S * (C + B * 5))
+        return nn.Sequential(fc1, dropout, activation, fc2)
