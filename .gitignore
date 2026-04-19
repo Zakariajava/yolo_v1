@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+
+.pytest_cache/
+.vscode/
+.idea/
+
+# Dataset y resultados de entrenamiento (para más adelante)
+data/
+*.pth
+*.pt
