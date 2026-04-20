@@ -1,5 +1,5 @@
 import torch
-from loss import YoloLoss
+from src.loss import YoloLoss
 
 
 def test_loss_runs_without_errors():

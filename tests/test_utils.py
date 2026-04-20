@@ -1,5 +1,5 @@
 import torch
-from utils import intersection_over_union
+from src.utils import intersection_over_union
 
 
 def test_identical_boxes():

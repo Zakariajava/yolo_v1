@@ -1,5 +1,5 @@
 import torch
-from model import Yolov1
+from src.model import Yolov1
 
 
 def test(S=7, B=2, C=20):
