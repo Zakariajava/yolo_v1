@@ -1,12 +1,30 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
 
+# Package metadata
+*.egg-info/
+*.egg
+
+# Pytest
 .pytest_cache/
+
+# IDE
 .vscode/
 .idea/
 
-# Dataset y resultados de entrenamiento (para más adelante)
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Data and outputs (too large for git)
 data/
+checkpoints/
 *.pth
 *.pt
+
+# Jupyter
+.ipynb_checkpoints/
