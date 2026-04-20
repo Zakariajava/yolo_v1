@@ -1,5 +1,6 @@
 import torch 
 import torch.nn as nn 
+from .config import SPLIT_SIZE, NUM_BOXES, NUM_CLASSES
 
 # Architecture from the original paper
 # padding calculated by hand 

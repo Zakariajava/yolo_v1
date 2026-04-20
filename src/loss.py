@@ -1,16 +1,18 @@
 import torch 
 import torch.nn as nn
-from utils import intersection_over_union
+from .utils import intersection_over_union
+from .config import SPLIT_SIZE, NUM_BOXES, NUM_CLASSES, LAMBDA_COORD, LAMBDA_NOOBJ
 
 class YoloLoss(nn.Module):
-    def __init__(self, S=7, B=2, C=20):
+    def __init__(self, S=SPLIT_SIZE, B=NUM_BOXES, C=NUM_CLASSES):
         super().__init__()
         self.mse = nn.MSELoss(reduction="sum")
         self.S = S
         self.B = B
         self.C = C
-        self.lambda_noobj = 0.5
-        self.lambda_coord = 5
+        self.lambda_coord = LAMBDA_COORD
+        self.lambda_noobj = LAMBDA_NOOBJ
+        
         
     def forward(self, predictions, target):
         # Reshape flat predictions (batch, 1470) into grid form (batch, S, S, C + B*5)
