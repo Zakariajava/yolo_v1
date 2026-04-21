@@ -34,3 +34,8 @@ DATA_DIR = ROOT_DIR / "data" / "coco"
 IMAGES_DIR = DATA_DIR / "images"
 ANNOTATIONS_FILE = DATA_DIR / "annotations" / "instances_all_clean.json"
 CHECKPOINTS_DIR = ROOT_DIR / "checkpoints"
+
+
+# Visualization outputs
+SAMPLES_DIR = ROOT_DIR / "artefacts" / "samples"
+

@@ -75,6 +75,10 @@ class COCODataset(Dataset):
             cat["id"]: idx for idx, cat in enumerate(data["categories"])
         }
 
+        # Build the reverse mapping from dense index -> class name,
+        # used for visualization and debugging.
+        self.class_names = [cat["name"] for cat in data["categories"]]
+
         # Image preprocessing: resize + to tensor (values scaled to [0, 1]).
         self.transform = transforms.Compose([
             transforms.Resize((image_size, image_size)),
