@@ -28,3 +28,6 @@ checkpoints/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# images samples 
+samples/
