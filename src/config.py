@@ -39,3 +39,32 @@ CHECKPOINTS_DIR = ROOT_DIR / "checkpoints"
 # Visualization outputs
 SAMPLES_DIR = ROOT_DIR / "artefacts" / "samples"
 
+# ============================ #
+# Training hyperparameters     #
+# ============================ #
+
+# Optimizer (SGD with momentum)
+LEARNING_RATE = 1e-3
+MOMENTUM = 0.9
+WEIGHT_DECAY = 5e-4
+
+# Batch size per GPU (total batch = BATCH_SIZE * num_gpus)
+BATCH_SIZE = 32
+
+# Number of training epochs
+NUM_EPOCHS = 100
+
+# DataLoader
+NUM_WORKERS = 8                      # per GPU
+
+# Learning rate schedule
+WARMUP_EPOCHS = 3                    # linear warmup at the start
+MIN_LR = 1e-5                        # lower bound after cosine decay
+
+# Validation and checkpointing
+CHECKPOINT_EVERY = 5                 # save a checkpoint every N epochs
+LOG_EVERY = 50                       # log training metrics every N steps
+
+# Output directories
+LOGS_DIR = ROOT_DIR / "logs"
+
