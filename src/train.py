@@ -35,6 +35,7 @@ from src.config import (
     BATCH_SIZE,
     CHECKPOINT_EVERY,
     CHECKPOINTS_DIR,
+    GRAD_CLIP,
     LEARNING_RATE,
     LOG_EVERY,
     LOGS_DIR,
@@ -128,6 +129,10 @@ def train_one_epoch(
 
         # Backward with gradient scaling to avoid fp16 underflow.
         scaler.scale(loss).backward()
+        # Unscale gradients before clipping (so we clip in real magnitude, not scaled).
+        scaler.unscale_(optimizer)
+        # Clip gradient norm to prevent divergence from a single bad batch.
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
         scaler.step(optimizer)
         scaler.update()
 

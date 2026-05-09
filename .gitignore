@@ -35,3 +35,7 @@ samples/
 # Training outputs
 checkpoints/
 logs/
+
+v1_run/
+v2_run/
+trained_model/

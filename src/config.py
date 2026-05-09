@@ -23,7 +23,7 @@ LAMBDA_NOOBJ = 0.5
 # Training hyperparameters     #
 # ============================ #
 
-LEARNING_RATE = 1e-3
+LEARNING_RATE = 5e-4
 MOMENTUM = 0.9
 WEIGHT_DECAY = 5e-4
 BATCH_SIZE = 32
@@ -51,3 +51,6 @@ TEST_ANNOTATIONS_FILE = DATA_DIR / "annotations" / "instances_test.json"
 CHECKPOINTS_DIR = ROOT_DIR / "checkpoints"
 LOGS_DIR = ROOT_DIR / "logs"
 SAMPLES_DIR = ROOT_DIR / "artefacts" / "samples"
+
+# Gradient clipping (prevents divergence from single bad batches)
+GRAD_CLIP = 5.0
