@@ -31,3 +31,7 @@ checkpoints/
 
 # images samples 
 samples/
+
+# Training outputs
+checkpoints/
+logs/
