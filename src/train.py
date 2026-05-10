@@ -47,6 +47,9 @@ from src.config import (
     VAL_ANNOTATIONS_FILE,
     WARMUP_EPOCHS,
     WEIGHT_DECAY,
+    SPLIT_SIZE,
+    NUM_BOXES,
+    NUM_CLASSES,
 )
 from src.dataset import COCODataset
 from src.loss import YoloLoss
@@ -133,7 +136,7 @@ def train_one_epoch(
         scaler.unscale_(optimizer)
         # Clip gradient norm to prevent divergence from a single bad batch.
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
-        scaler.step(optimizer)
+        scaler.step(optimizer) # divide the gradients by the scale factor, verify if there is Inf or NaN, then if everting its okey calls optimizer.step() otherwise skip to the next
         scaler.update()
 
         # Average loss across GPUs for logging.
@@ -240,7 +243,7 @@ def main():
     )
 
     # Model, loss, optimizer, scaler.
-    model = Yolov1(split_size=7, num_boxes=2, num_classes=80).to(device)
+    model = Yolov1(split_size=SPLIT_SIZE, num_boxes=NUM_BOXES, num_classes=NUM_CLASSES).to(device)
     model = DDP(model, device_ids=[local_rank])
 
     loss_fn = YoloLoss().to(device)
