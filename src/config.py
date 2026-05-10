@@ -23,7 +23,7 @@ LAMBDA_NOOBJ = 0.5
 # Training hyperparameters     #
 # ============================ #
 
-LEARNING_RATE = 5e-4
+LEARNING_RATE = 1e-3
 MOMENTUM = 0.9
 WEIGHT_DECAY = 5e-4
 BATCH_SIZE = 32
@@ -33,7 +33,7 @@ NUM_WORKERS = 8
 WARMUP_EPOCHS = 3
 MIN_LR = 1e-5
 
-CHECKPOINT_EVERY = 5
+CHECKPOINT_EVERY = 2
 LOG_EVERY = 50
 
 # ============================ #
@@ -53,4 +53,4 @@ LOGS_DIR = ROOT_DIR / "logs"
 SAMPLES_DIR = ROOT_DIR / "artefacts" / "samples"
 
 # Gradient clipping (prevents divergence from single bad batches)
-GRAD_CLIP = 5.0
+GRAD_CLIP = 10.0
