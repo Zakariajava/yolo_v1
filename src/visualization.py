@@ -14,7 +14,6 @@ from PIL import Image, ImageDraw, ImageFont
 
 from .config import IMAGE_SIZE, NUM_CLASSES, SPLIT_SIZE
 
-
 def generate_class_colors(num_classes=NUM_CLASSES):
     """
     Generate a fixed palette of visually distinct colors, one per class.
@@ -186,3 +185,100 @@ def get_class_names(dataset):
     class_names[i] gives the human-readable name of class i (in the 0..79 range).
     """
     return dataset.class_names
+
+def decode_predictions(
+    predictions,
+    image_size=IMAGE_SIZE,
+    S=SPLIT_SIZE,
+    C=NUM_CLASSES,
+    iou_threshold=0.5,
+    prob_threshold=0.4,
+):
+    """
+    Convert raw YOLO model predictions into a list of drawable boxes.
+
+    Pipeline:
+        raw tensor (1, 4410) → cellboxes_to_boxes → NMS → box dicts in pixels
+
+    Args:
+        predictions:    tensor of shape (1, S*S*(C+5*B)) or (S*S*(C+5*B),).
+                        The output of the model for a SINGLE image.
+        image_size:     side length of the (resized) image in pixels.
+        S:              grid size.
+        C:              number of classes.
+        iou_threshold:  NMS IoU threshold (boxes with higher IoU get suppressed).
+        prob_threshold: NMS probability threshold (low-confidence boxes filtered).
+
+    Returns:
+        List of dicts in the same format as decode_target(), so the same
+        draw_boxes() can render them:
+            {
+                "class_idx": int,
+                "x1", "y1", "x2", "y2": pixel corners,
+                "center_x", "center_y": pixel center,
+                "prob": float           # confidence of this prediction
+            }
+        Note: no "cell_row" / "cell_col" — predictions are not tied to one cell.
+    """
+    from .utils import cellboxes_to_boxes, non_max_suppression
+
+    # Ensure batch dimension exists: (1, 4410) instead of (4410,)
+    if predictions.dim() == 1:
+        predictions = predictions.unsqueeze(0)
+
+    # convert tensor to Python list of boxes per cell.
+    all_bboxes = cellboxes_to_boxes(predictions, S=S)
+
+    # decoding a single image — take the first (and only) image's boxes.
+    image_bboxes = all_bboxes[0]
+
+    # apply NMS to filter duplicates and low-confidence boxes.
+    nms_bboxes = non_max_suppression(
+        image_bboxes,
+        iou_threshold=iou_threshold,
+        prob_threshold=prob_threshold,
+        box_format="midpoint",
+    )
+
+    # convert each NMS-surviving box to the dict format that draw_boxes() expects.
+    boxes = []
+    for bbox in nms_bboxes:
+        class_idx = int(bbox[0])
+        prob = float(bbox[1])
+        x_norm = bbox[2]  # in (0, 1) over the full image
+        y_norm = bbox[3]
+        w_norm = bbox[4]
+        h_norm = bbox[5]
+
+        # Scale to pixel coordinates.
+        center_x = x_norm * image_size
+        center_y = y_norm * image_size
+        w_px = w_norm * image_size
+        h_px = h_norm * image_size
+
+        # Box corners from center + size.
+        # Use absolute width/height in case the model predicted negative values
+        # (can happen with under-trained or diverging models).
+        w_px = abs(w_px)
+        h_px = abs(h_px)
+        x1 = center_x - w_px / 2
+        y1 = center_y - h_px / 2
+        x2 = center_x + w_px / 2
+        y2 = center_y + h_px / 2
+
+        # Skip degenerate boxes (zero or negative area).
+        if x2 <= x1 or y2 <= y1:
+            continue
+        # Clip to image bounds.
+        x1 = max(0, x1)
+        y1 = max(0, y1)
+        x2 = min(image_size, x2)
+        y2 = min(image_size, y2)
+        boxes.append({
+            "class_idx": class_idx,
+            "prob": prob,
+            "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+            "center_x": center_x, "center_y": center_y,
+        })
+
+    return boxes
