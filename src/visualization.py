@@ -93,9 +93,25 @@ def decode_target(target, image_size=IMAGE_SIZE, S=SPLIT_SIZE, C=NUM_CLASSES):
 
 def tensor_to_pil(image_tensor):
     """
-    Convert a tensor image (C, H, W) with values in [0, 1] to a PIL Image.
+    Convert a normalized tensor image (C, H, W) back to a PIL Image.
+
+    The dataset applies ImageNet normalization, so we must invert that
+    before converting to displayable RGB. Otherwise the bytes are nonsense.
+
+    Transform applied: (x - mean) / std  → ToTensor → Normalize.
+    Inverse:           x = (normalized * std) + mean.
     """
-    # From (3, H, W) to (H, W, 3) and from [0, 1] to [0, 255].
+    import torch
+
+    # ImageNet stats (must match what dataset.py uses).
+    mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+
+    # De-normalize: shape (3, H, W).
+    image_tensor = image_tensor.cpu() * std + mean
+
+    # Clamp to [0, 1] in case of small numerical drift, then to [0, 255].
+    image_tensor = image_tensor.clamp(0, 1)
     array = (image_tensor.permute(1, 2, 0) * 255).byte().numpy()
     return Image.fromarray(array)
 
