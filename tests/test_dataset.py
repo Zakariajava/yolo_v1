@@ -75,11 +75,18 @@ def test_getitem_returns_correct_shapes(dataset):
 
 
 def test_image_values_are_normalized(dataset):
-    """ToTensor() should scale pixel values from 0-255 into 0-1."""
+    """
+    Images should be normalized with ImageNet stats for compatibility with
+    the ResNet18 backbone.
+
+    After ImageNet normalization: (x - mean) / std for x in [0, 1].
+    Pixel values typically end up in approximately [-2.5, 2.7].
+    """
     image, _ = dataset[0]
     assert image.dtype == torch.float32
-    assert image.min() >= 0.0
-    assert image.max() <= 1.0
+    # Sanity bounds — well outside the legitimate range catches misuse.
+    assert image.min() >= -3.0
+    assert image.max() <= 3.0
 
 
 def test_target_has_object_confidence_at_most_one_per_cell(dataset):
