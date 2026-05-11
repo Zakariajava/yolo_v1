@@ -79,10 +79,17 @@ class COCODataset(Dataset):
         # used for visualization and debugging.
         self.class_names = [cat["name"] for cat in data["categories"]]
 
-        # Image preprocessing: resize + to tensor (values scaled to [0, 1]).
+        # Image preprocessing: resize + to tensor + ImageNet normalization.
+        # The Normalize step is required because the ResNet18 backbone was pretrained
+        # on ImageNet with these specific mean/std stats. Feeding raw [0, 1] images
+        # would shift the input distribution and destroy the pretrained features.
         self.transform = transforms.Compose([
             transforms.Resize((image_size, image_size)),
             transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],   # ImageNet RGB means
+                std=[0.229, 0.224, 0.225],    # ImageNet RGB stds
+            ),
         ])
 
     def __len__(self):
