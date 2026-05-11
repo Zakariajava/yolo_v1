@@ -23,11 +23,11 @@ LAMBDA_NOOBJ = 0.5
 # Training hyperparameters     #
 # ============================ #
 
-LEARNING_RATE = 1e-3
+LEARNING_RATE = 1e-4
 MOMENTUM = 0.9
 WEIGHT_DECAY = 5e-4
 BATCH_SIZE = 32
-NUM_EPOCHS = 135
+NUM_EPOCHS = 50
 NUM_WORKERS = 8
 
 WARMUP_EPOCHS = 3
