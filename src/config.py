@@ -54,3 +54,6 @@ SAMPLES_DIR = ROOT_DIR / "artefacts" / "samples"
 
 # Gradient clipping (prevents divergence from single bad batches)
 GRAD_CLIP = 10.0
+
+
+DEVICE = "cuda"
