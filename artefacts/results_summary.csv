@@ -1,0 +1,7 @@
+model,backbone,bugs,epochs,train_loss,val_loss,map_test_0.1,map_test_0.3
+V1,Darknet,with bugs,33,diverged,N/A,0.000,0.000
+V2,Darknet,with bugs,100,1.45,1.50,0.000,0.000
+V3,Darknet,with bugs,135,1.20,1.35,0.000,0.000
+V4,ResNet18,with bugs,50,0.96,0.98,0.000,0.000
+V5,ResNet18,fixed,50,336.34,337.37,0.0409,0.0373
+V6,ResNet18,fixed,60,330.50,337.40,0.0415,0.0381
