@@ -1,0 +1,75 @@
+% =============================================================
+%  Section: Conclusions
+% =============================================================
+
+This work reproduces the YOLOv1 detector of \citet{redmon2016you} on the COCO
+2017 dataset, using a ResNet18 backbone~\citep{he2016deep} pretrained on
+ImageNet, a convolutional adapter and the paper's two-layer dense detection
+head. The pipeline---dataset preparation, model architecture, five-term
+loss, distributed training loop with mixed precision, and mAP evaluation
+with per-class non-maximum suppression---is implemented in PyTorch and is
+end-to-end reproducible from the seeded dataset split.
+
+The headline number is $\mathrm{mAP}@0.5 = 0.0415$ on the held-out COCO test
+split (V6 checkpoint, prob\_threshold~$0.1$), with forward-pass latency of
+$\sim\!5.3$~ms per image at $448\!\times\!448$ on a single Ada-generation
+laptop GPU, well inside the real-time regime the original paper sought.
+Both the absolute mAP and the gap to the paper's $63.4$ on VOC are
+attributable to deliberate choices made within the budget of the project
+rather than to implementation defects: the dataset is roughly four times
+harder (80 classes versus 20, with a long tail of small and clustered
+objects), the training schedule is half the duration, the backbone is
+substantially smaller, and the augmentation pipeline is minimal.
+
+The central finding of the project is methodological rather than numerical.
+The first four training runs (V1 through V4), spanning two different
+backbones and a deliberately wide sweep of learning rates and gradient-clip
+thresholds, all produced exactly $\mathrm{mAP}@0.5 = 0$ on the test set
+despite training and validation losses that decreased monotonically and
+plateaued at values an observer would naturally interpret as evidence of a
+learning model. The cause was not a poor hyper-parameter choice or a
+fundamental limitation of the YOLO formulation, but two independent
+implementation bugs:
+
+\begin{itemize}
+    \item A loss function that indexed the per-cell prediction tensor with
+        positions appropriate for the Pascal VOC layout ($C=20$) while
+        receiving COCO targets ($C=80$). Of $1\,062$ ground-truth object
+        cells in a sample of 200 training images, the buggy
+        ``exists\_box'' mask was set for only three of them (the elephants).
+        The model was gradient-blind to the bounding-box slots it was
+        supposed to predict, and the entire localisation signal evaporated.
+    \item A post-processing function that divided predicted widths and
+        heights by $S=7$ before returning them, even though the dataset and
+        loss had agreed to express $w, h$ directly in image-relative units.
+        Even a perfectly trained model would have produced boxes seven times
+        smaller than ground truth, with a maximum achievable IoU of
+        $\sim\!0.02$---well below the $0.5$ threshold of $\mathrm{mAP}@0.5$.
+\end{itemize}
+
+\noindent Each bug, in isolation, is sufficient to produce
+$\mathrm{mAP}@0.5 = 0$ at evaluation time. Both were invisible to the
+pre-existing unit-test suite, which checked tensor shapes and value ranges
+but not quantitative coordinate or value invariants. Both were detected
+within a single audit pass once the question shifted from
+``why are the hyper-parameters wrong?'' to ``is the loss the loss?''.
+
+The pedagogical takeaway, broader than the specific bugs, is that a
+detection pipeline contains many silent failure modes whose individual
+symptoms are too subtle to diagnose by training-curve inspection alone.
+A converging loss curve is consistent both with a model learning what we
+want it to learn and with a model learning an arithmetically valid quantity
+that is not what we want. The distinction can be settled cheaply with
+round-trip tests on each coordinate transformation and with loss tests that
+exercise the production class count rather than only the count for which
+the test was originally written. We have added both kinds of test alongside
+the fixes; the project would have arrived at $\mathrm{mAP}@0.5 > 0$ within
+the first training run if they had existed from the start.
+
+Whether the resulting detector would have been competitive with modern
+single-stage detectors is a question the architecture of YOLOv1 was never
+designed to answer. The improvements that close most of the residual gap to
+its descendants---anchor boxes, multi-scale feature pyramids, mosaic
+augmentation, fully-convolutional heads---are by now the standard fare of
+the YOLO family from \citet{redmon2018yolov3} onwards, and they constitute
+the natural continuation of this work.

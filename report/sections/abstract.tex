@@ -1,0 +1,27 @@
+We reproduce the YOLOv1 detector of \citet{redmon2016you} from scratch in
+PyTorch, port it from the paper's VOC setting to COCO 2017 (eighty classes),
+and train it end-to-end with an ImageNet-pretrained ResNet18 backbone, a
+convolutional adapter and the paper's two-layer dense detection head.
+The substantive contribution of this work is methodological rather than
+numerical. The first four training runs, spanning two backbones and a
+deliberately wide sweep of learning rates and gradient-clip thresholds, all
+produced exactly $\mathrm{mAP}@0.5 = 0$ on the held-out test split despite
+training and validation losses that decreased monotonically and looked, in
+isolation, like evidence of a learning model. A code audit identified two
+independent implementation bugs latent in the loss and in the coordinate
+decoder, each of which is individually sufficient to drive the metric to
+zero on COCO while remaining invisible to the pre-existing unit-test suite
+(which exercised only the VOC index layout) and to training-curve
+inspection. Both bugs were fixed with a handful of lines and verified by
+synthetic round-trip and loss-sensitivity tests. The two post-fix runs (V5
+and V6) produced the first non-zero detection scores, with the V6 checkpoint
+reaching $\mathrm{mAP}@0.5 = 0.0415$ on the test split at a forward-only
+latency of $\sim\!5.3$\,ms per $448\!\times\!448$ image on a single
+Ada-generation laptop GPU. We do not claim competitiveness with current
+detectors; the gap to the paper's $63.4$ on VOC is accounted for by the
+harder dataset, a halved training schedule, a smaller backbone and a minimal
+augmentation pipeline, each of which we analyse in turn. The takeaway we
+hope to leave with the reader is that a converging loss curve is not, on
+its own, evidence that the model is learning what the loss is supposed to
+measure; cheap quantitative round-trip tests on each coordinate
+transformation would have caught both bugs before the first epoch.

@@ -1,0 +1,539 @@
+% =============================================================
+%  Section: Experimentation
+% =============================================================
+
+This section traces six successive training runs (V1--V6) of the YOLOv1
+implementation on COCO~2017. The first four runs all produced
+$\mathrm{mAP}@0.5 = 0$ on the held-out test set despite training losses that
+appeared to converge. The recovery from this state of affairs is the central
+narrative of this work: a sequence of hyper-parameter changes that failed to
+diagnose the problem, followed by a code audit that identified two
+implementation bugs invisible to the unit-test suite. V5 and V6 were trained
+after the fixes and produced the first non-zero detection scores.
+
+We adopt the convention that each version is identified by its short tag
+(V1\ldots V6) and we cross-reference the corresponding row of
+Table~\ref{tab:run-summary} throughout.
+
+% -------------------------------------------------------------
+\subsection{Common training setup}
+\label{sec:experiments:setup}
+
+All six versions share the optimiser, the loss formulation (whose
+implementation, however, differed in V1--V4 from V5--V6 due to the bug fixes
+discussed in Section~\ref{sec:bug-investigation}), the data pipeline, and the
+evaluation protocol. We summarise the constants here and only describe
+per-version variations in their respective subsections.
+
+\begin{itemize}
+    \item \textbf{Dataset:} COCO~2017~\citep{lin2014microsoft}, all 80 classes,
+        consolidated into a single annotation file and split deterministically
+        (seed $42$) into 90\,\%\,/\,5\,\%\,/\,5\,\% for train, validation and
+        test. The test split contains 6\,165 images and 42\,795 ground-truth
+        bounding boxes after the removal of crowd annotations. Of these, the
+        dataset class retains only $31\,167$ at training time because the
+        one-object-per-cell rule (Section~\ref{sec:impl:dataset}) drops any
+        annotation whose grid cell is already claimed by a previously
+        encountered object; the dropped boxes still count as missed
+        detections at evaluation, since the evaluator reads the raw COCO
+        annotations.
+    \item \textbf{Optimiser:} stochastic gradient descent with Nesterov-free
+        momentum~$0.9$ and weight decay~$5\!\times\!10^{-4}$, applied uniformly
+        to all parameters (no parameter groups).
+    \item \textbf{Learning-rate schedule:} a linear warm-up of three epochs
+        from $0$ to the peak rate, followed by cosine annealing
+        \citep{loshchilov2017sgdr} down to a minimum of
+        $1\!\times\!10^{-5}$. The peak rate is the per-version
+        parameter and is reported individually.
+    \item \textbf{Mixed precision:} the forward pass runs under
+        \texttt{torch.amp.autocast} in float16, while master weights and the
+        loss accumulator remain in float32~\citep{micikevicius2018mixed}.
+        Gradient scaling is performed with \texttt{GradScaler} and the scaled
+        gradients are unscaled before clipping.
+    \item \textbf{Distributed setup:} the training loop is written for
+        \texttt{DistributedDataParallel} with \texttt{torchrun}, but in
+        practice every run used a single GPU and a per-GPU batch size of
+        $32$. V1--V3 ran on a RunPod pod equipped with $8\!\times$ NVIDIA H100
+        GPUs (of which only one was effectively exercised due to the storage
+        bottleneck described in Section~\ref{sec:impl:training});
+        V4--V6 ran on a Vast.ai H200 NVL pod ($140$~GB HBM3) with
+        node-local NVMe.
+    \item \textbf{Loss:} the five-term sum-of-squared-errors loss from
+        \citet{redmon2016you}, with $\lambda_{\text{coord}}=5$ and
+        $\lambda_{\text{noobj}}=0.5$. The implementation is the object of
+        Section~\ref{sec:bug-investigation}.
+    \item \textbf{Evaluation:} the trained model is run on the full test split
+        with prediction probability thresholds of $0.1$ and $0.3$, followed by
+        per-class non-maximum suppression at IoU~$0.5$. The reported metric is
+        mean Average Precision at IoU~$0.5$, computed per class using the
+        unclaimed-GT bookkeeping described in
+        Section~\ref{sec:theory:map} and averaged across the 80 classes that have at
+        least one ground-truth instance in the test split (which in our case is
+        all of them).
+\end{itemize}
+
+The variables that change across versions are the backbone, the peak learning
+rate, the gradient clipping threshold, the number of training epochs and, most
+importantly for V5 and V6, the loss and decoding code. They are summarised in
+Table~\ref{tab:run-summary}.
+
+\begin{table}[ht]
+\centering
+\caption{Summary of all six training runs. ``Bugs'' indicates whether the loss
+and coordinate-decoding bugs analysed in Section~\ref{sec:bug-investigation}
+were present at training time. Validation loss is the final per-batch
+sum-reduced value from the training log; the magnitude jump between V4 and V5
+is itself evidence of the bug fix and is discussed in
+Section~\ref{sec:experiments:v5}.}
+\label{tab:run-summary}
+\small
+\begin{tabular}{lllcrrcc}
+\toprule
+\textbf{Run} & \textbf{Backbone} & \textbf{Bugs} & \textbf{Epochs} &
+\textbf{Train loss} & \textbf{Val loss} &
+\textbf{mAP@0.5 (0.1)} & \textbf{mAP@0.5 (0.3)} \\
+\midrule
+V1 & Darknet24 & present & 33 (diverged) & --     & N/A  & 0.0000 & 0.0000 \\
+V2 & Darknet24 & present & 100           & 1.45   & 1.50 & 0.0000 & 0.0000 \\
+V3 & Darknet24 & present & 135           & 1.20   & 1.35 & 0.0000 & 0.0000 \\
+V4 & ResNet18  & present & 50            & 0.96   & 0.98 & 0.0000 & 0.0000 \\
+V5 & ResNet18  & fixed   & 50            & 336.34 & 337.37 & 0.0409 & 0.0373 \\
+V6 & ResNet18  & fixed   & 60            & 330.50 & 337.40 & \textbf{0.0415} & 0.0381 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% -------------------------------------------------------------
+\subsection{V1: paper-faithful Darknet baseline}
+\label{sec:experiments:v1}
+
+The first attempt follows \citet{redmon2016you} as literally as the constraints
+of a modern PyTorch~\citep{paszke2019pytorch} stack allow. The backbone is a
+re-implementation of the paper's 24-layer Darknet, initialised from scratch
+with the default PyTorch initialisation. The detection head is two fully
+connected layers (50\,176~$\to$~4096~$\to$~4410) with dropout~0.5 after the
+first \citep{srivastava2014dropout}. The peak learning rate is
+$1\!\times\!10^{-3}$, matching the paper's choice for training from scratch on
+ImageNet-free data. No gradient clipping is applied. The intended schedule is
+100 epochs.
+
+Training diverges at epoch~33: the loss tensor turns into NaN within a single
+batch and remains NaN for every subsequent step. The proximate cause is the
+combination of a randomly initialised 24-layer convolutional network, a
+high peak learning rate, and the lack of any clipping mechanism: a single
+unlucky batch produces a gradient norm large enough to push the master weights
+into a region where the next forward pass overflows the fp16 dynamic range.
+The run is abandoned, and no checkpoint is selected for evaluation. We
+nonetheless include V1 in Table~\ref{tab:run-summary} for narrative
+completeness.
+
+% -------------------------------------------------------------
+\subsection{V2: regularisation by gradient clipping}
+\label{sec:experiments:v2}
+
+V2 is a direct response to V1: the peak learning rate is halved to
+$5\!\times\!10^{-4}$ and we introduce gradient-norm clipping with a threshold
+of $5.0$. The architecture is unchanged. The model trains for the planned
+100 epochs without divergence; the validation loss bottoms out around 1.50 and
+plateaus. On the test set, however, the mAP@0.5 is still exactly zero. The
+qualitative behaviour is that of a model that has learnt to drive object
+confidences to almost zero everywhere: post-NMS detections are scarce and
+their bounding boxes are unrelated to the ground-truth objects.
+
+We interpreted this at the time as a sign that the lowered learning rate was
+preventing the network from escaping a trivial minimum of the no-object
+confidence term. In hindsight, this interpretation was incomplete: the
+``trivial minimum'' was indeed real, but its existence was caused by the loss
+bug discussed in Section~\ref{sec:bug:loss-indices}, not by the
+hyper-parameters.
+
+% -------------------------------------------------------------
+\subsection{V3: relaxing the clip, restoring the LR}
+\label{sec:experiments:v3}
+
+V3 returns the peak learning rate to $1\!\times\!10^{-3}$ and increases the
+gradient-clip threshold to $10.0$, with the working hypothesis that V2 was
+under-trained. The number of epochs is extended to 135 to match the paper's
+total schedule length. The training loss continues to decrease and reaches its
+lowest value across the Darknet runs (1.20), but the validation loss begins to
+diverge from training loss around epoch~$\sim 40$, which we interpreted as
+overfitting. mAP@0.5 on the test set is again exactly zero.
+
+At this point the working hypothesis became that the Darknet backbone, trained
+from scratch on COCO without the ImageNet pre-training stage that
+\citet{redmon2016you} performed, simply lacks the inductive bias needed for
+this dataset. We therefore moved on to V4.
+
+% -------------------------------------------------------------
+\subsection{V4: ResNet18 pretrained on ImageNet}
+\label{sec:experiments:v4}
+
+V4 replaces the 24-layer Darknet with a ResNet18~\citep{he2016deep} loaded with
+ImageNet weights from \texttt{torchvision} (\texttt{ResNet18\_Weights.DEFAULT}).
+The classification head of the ResNet is discarded and the convolutional trunk
+up to and including \texttt{layer4} produces feature maps of shape
+$(B, 512, 14, 14)$ given the standard $448\times 448$ input. We bridge to the
+detection head's expected $(B, 1024, 7, 7)$ with a two-layer adapter (a
+stride-2 convolution from $512$ to $1024$ channels, followed by a stride-1
+convolution that refines the representation), each with batch
+normalisation~\citep{ioffe2015batch} and a LeakyReLU activation. The detection
+head is identical to V1--V3. All parameters of the model carry
+\texttt{requires\_grad=True} from epoch one; we do not freeze any layer.
+
+Because the backbone now expects ImageNet-normalised inputs, the dataset
+transform is augmented with the standard channel mean/std normalisation. The
+peak learning rate is reduced to $1\!\times\!10^{-4}$ to fine-tune the
+pretrained convolutional features without destroying them, while still leaving
+enough learning capacity for the randomly initialised adapter and FC head
+(which between them carry the majority of the model's 248~M parameters).
+Gradient clipping is kept at $10.0$, and the schedule is shortened to 50
+epochs.
+
+V4 trains without numerical issues. The validation loss reaches 0.98 at the
+best epoch---the lowest value yet, and on its face suggestive of a model that
+has fit the data well. Yet the mAP@0.5 on the test set is again exactly zero.
+Post-NMS we observe a different qualitative failure mode from V2/V3: the
+model emits a large number of low-confidence boxes per image (on the order
+of 20 with $p > 0.005$), but they are spatially uncorrelated with the ground
+truth, and their predicted classes do not match.
+
+This was the result that forced the question: \emph{is the loss decreasing
+because the model is learning, or because it is finding a trivial minimum of a
+loss that is not what we think it is}? The investigation that followed is the
+subject of the next section.
+
+% =============================================================
+\subsection{Bug investigation}
+\label{sec:bug-investigation}
+
+The trigger for an audit was the observation that, across four runs with very
+different hyper-parameter settings and two different backbones, the test mAP
+remained identically zero while the validation losses spanned the range
+$0.96$--$1.50$. A loss that decreases consistently across hyper-parameter
+sweeps but produces a detector that detects nothing is suspect: either the
+model genuinely has no localisation capacity in this regime (which is hard to
+reconcile with a fully fine-tuned ResNet18 at val\_loss~$<\!1$), or the loss is
+not enforcing the constraint we expect.
+
+The audit identified two independent bugs, each of which is sufficient on its
+own to produce $\mathrm{mAP}@0.5 = 0$. The first is in the loss function; the
+second is in the post-processing routine that converts model outputs back to
+image-relative bounding boxes. We discuss them in turn.
+
+% -------------------------------------------------------------
+\subsubsection{Bug~1: VOC-layout indices applied to COCO tensors}
+\label{sec:bug:loss-indices}
+
+The original implementation of the YOLO loss in \texttt{src/loss.py} addressed
+the per-cell prediction tensor by hardcoded integer indices that matched the
+Pascal VOC layout (20 classes, $C=20$). The expected per-cell layout for
+$C=20$ is
+\[
+  \underbrace{[\,0,\;\ldots,\;19\,]}_{\text{class probabilities}}\;\;
+  \underbrace{[\,20\,]}_{\text{conf}_1}\;\;
+  \underbrace{[\,21,\;\ldots,\;24\,]}_{x_1,\,y_1,\,w_1,\,h_1}\;\;
+  \underbrace{[\,25\,]}_{\text{conf}_2}\;\;
+  \underbrace{[\,26,\;\ldots,\;29\,]}_{x_2,\,y_2,\,w_2,\,h_2},
+\]
+which the loss reads literally as \texttt{[..., 20:21]} for the
+``object exists'' mask, \texttt{[..., 21:25]} for the first predicted box, and
+so on. For COCO with $C=80$, the actual per-cell tensor produced by the
+dataset is
+\[
+  \underbrace{[\,0,\;\ldots,\;79\,]}_{\text{class probabilities}}\;\;
+  \underbrace{[\,80\,]}_{\text{conf}_1}\;\;
+  \underbrace{[\,81,\;\ldots,\;84\,]}_{x_1,\,y_1,\,w_1,\,h_1}\;\;
+  \underbrace{[\,85\,]}_{\text{conf}_2}\;\;
+  \underbrace{[\,86,\;\ldots,\;89\,]}_{x_2,\,y_2,\,w_2,\,h_2},
+\]
+so the indices used by the loss point inside the \emph{class probability}
+region of the tensor, never reaching the coordinate slots.
+
+The downstream consequences are catastrophic, but each consequence is locally
+silent:
+\begin{enumerate}
+    \item \texttt{target[..., 20:21]}, which the loss interprets as the
+        object-presence indicator (\texttt{exists\_box}), is in COCO the
+        class-probability slot for class index~20 (which after the dense COCO
+        remapping is the \emph{elephant} class). The mask is therefore $1$
+        only in cells whose ground-truth class is elephant, and $0$ otherwise.
+    \item The coordinate slots that the loss reads
+        (\texttt{predictions[..., 21:25]}, \texttt{target[..., 21:25]}) are
+        actually class probability slots for class indices~21--24
+        (\emph{bear}, \emph{zebra}, \emph{giraffe}, \emph{backpack}). The IoU
+        computation between two slices of class probabilities returns a
+        nonsense quantity that is essentially uncorrelated with anything the
+        network can learn from.
+    \item The class loss is computed over the slice
+        \texttt{predictions[..., :20]}, so only the first twenty COCO classes
+        (out of eighty) participate in the class term at all. Classes 20--79
+        receive no gradient signal whatsoever.
+    \item The no-object loss penalises \texttt{predictions[..., 20]} and
+        \texttt{predictions[..., 25]} in cells where the target's position~20
+        is zero. Position~20 of the target is zero in the overwhelming
+        majority of cells (those that do not happen to contain an elephant),
+        so the model is strongly pulled towards driving these two output
+        positions to zero everywhere. Position~20 and~25 in the prediction
+        tensor, however, are not the confidence slots; they are the
+        class-probability slots for the class \emph{elephant} and (in
+        practice, after \texttt{argmax}) the slot interpreted as ``conf~2''
+        is the class probability for \emph{train}. The trivial-minimum
+        behaviour observed in V2--V4 is a faithful learning of this confused
+        no-object signal, not a property of the MSE loss as such.
+\end{enumerate}
+
+The bug is invisible from a unit-testing perspective. The existing test in
+\texttt{tests/test\_loss.py} instantiates the loss with $C=20$:
+
+\begin{lstlisting}[caption={Pre-fix unit test that passed for the wrong reason.},label=lst:voc-test]
+loss_fn = YoloLoss(S=7, B=2, C=20)
+target = torch.zeros(1, 7, 7, 30)
+target[0, 3, 4, 0]    = 1                              # class
+target[0, 3, 4, 20]   = 1                              # confidence
+target[0, 3, 4, 21:25] = torch.tensor([0.5, 0.5, 0.3, 0.3])
+\end{lstlisting}
+
+\noindent At $C=20$, the indices $20$, $21\!:\!25$, $25$, $26\!:\!30$ that the
+loss reads happen to coincide with the slots that the dataset writes, so the
+test passes. The test would have to be parametrised on $C$ to detect the
+mismatch; ours was not.
+
+\paragraph{Verification.} We constructed a synthetic COCO-shaped target with
+one ground-truth object at class~7, cell~$(3,4)$, with box
+$(x_c, y_c, w, h) = (0.5, 0.5, 0.3, 0.3)$ and computed the loss on two
+predictions:
+
+\begin{enumerate}
+    \item A ``perfect'' prediction that matches the target at all slots,
+        including the correct COCO coordinate slots $[81\!:\!85]$.
+    \item The same prediction but with the four box-coordinate slots
+        $[81\!:\!85]$ overwritten with arbitrarily large values
+        ($99.0,\ldots,99.0$).
+\end{enumerate}
+
+Under a correctly indexed loss, prediction~(2) must produce a much larger
+value than prediction~(1). Under the buggy loss, the two values were
+identical to within numerical precision: $0.000490$ in both cases. This
+confirms that the loss was \emph{gradient-blind} to the slots that the model
+is supposed to predict.
+
+Aggregated over a sample of 200 real COCO training images, the buggy
+$\texttt{exists\_box}$ mask was $1$ in only 3 cells out of $1\,062$ cells that
+actually contained a ground-truth object---about $0.3\,\%$---and these three
+were all elephants. The remaining $99.7\,\%$ of real objects contributed
+exactly zero to the box and object terms of the loss.
+
+\paragraph{Fix.} We replaced every hardcoded literal in the loss with an index
+derived from \texttt{self.C}:
+
+\begin{lstlisting}[caption={Index variables introduced at the top of
+    \texttt{YoloLoss.forward}.}]
+C          = self.C
+OBJ_IDX    = C
+BOX1_SLICE = slice(C + 1, C + 5)
+CONF2_IDX  = C + 5
+BOX2_SLICE = slice(C + 6, C + 10)
+\end{lstlisting}
+
+\noindent and propagated these names through every site that previously held a
+literal. The class term was also corrected from
+\texttt{predictions[..., :20]} to \texttt{predictions[..., :C]} so that all 80
+classes participate. The pre-existing $C=20$ unit test continues to pass
+because the new variables evaluate to the same numeric positions when $C=20$.
+A full side-by-side diff is provided in Appendix~\ref{app:loss-diff}.
+
+A second, smaller follow-up to the loss was committed shortly afterwards: the
+square-root transform of $w$ and $h$ (the paper's trick to equalise the
+contribution of small and large boxes) was implemented as an \emph{in-place}
+assignment, \texttt{box\_predictions[..., 2:4] = \ldots}. In-place writes on a
+tensor that participates in the autograd graph silently sever the backward
+pass through that tensor, with no exception raised at runtime. The fix is to
+re-assemble the modified tensor with \texttt{torch.cat} along the channel
+dimension. We mention this here for completeness; it did not affect the V1--V4
+runs because, given Bug~1, no gradient flowed through that path anyway.
+
+% -------------------------------------------------------------
+\subsubsection{Bug~2: spurious \texorpdfstring{$1/S$}{1/S} factor in \texorpdfstring{$w,\,h$}{w, h} decoding}
+\label{sec:bug:wh-decoding}
+
+The post-processing routine \texttt{convert\_cellboxes} in
+\texttt{src/utils.py} converts the raw per-cell prediction tensor into a list
+of bounding boxes in image-relative coordinates. The conversion of the
+$(x, y)$ centre coordinates is straightforward: the predictions are stored as
+offsets within the cell, so the global $x$ coordinate is the cell column index
+plus the in-cell offset, divided by $S$:
+\[
+  x_{\text{global}} = \frac{j + x_{\text{cell}}}{S}, \qquad
+  y_{\text{global}} = \frac{i + y_{\text{cell}}}{S}.
+\]
+The width and height, however, are stored by the dataset as ratios of the
+\emph{whole image} dimensions ($w_{\text{norm}} = w_{\text{px}}/W_{\text{img}}$
+and likewise for $h$), and the loss compares the model's $w,h$ output
+\emph{directly} against these values. The model therefore learns to predict
+$w_{\text{norm}}, h_{\text{norm}}$.
+
+In our implementation the decoding code, however, performed an additional
+division by $S$:
+\begin{lstlisting}
+w_h = (1.0 / S) * best_boxes[..., 2:4]   # BUG: divides w,h by 7
+\end{lstlisting}
+
+\noindent This is the symmetric mistake of porting from a different
+encoding. The implementation we drew partial inspiration
+from~\citep{persson2020yolo} stores width and height as $w_{\text{norm}}\cdot S$
+and $h_{\text{norm}}\cdot S$ (``number of cells the box spans''), so dividing
+by $S$ at decode time is correct \emph{in that codebase}. In ours it is not.
+
+\paragraph{Consequence.} Every predicted box is decoded with width and height
+seven times smaller than the value the model has learnt to output. Given that
+the network was trained to predict $w_{\text{norm}}, h_{\text{norm}} \in [0,1]$,
+this scaling produces boxes of at most one-seventh of the correct linear
+dimension and roughly one-forty-ninth of the correct area.
+
+The arithmetic upper bound on the IoU between such a shrunken prediction and
+its perfectly aligned ground truth is
+\[
+  \text{IoU} \le \frac{(\tfrac{1}{S})^2}{1 + (\tfrac{1}{S})^2 - (\tfrac{1}{S})^2}
+              = \frac{1}{S^2} \approx 0.020,
+\]
+which is far below the threshold of $0.5$ used in mAP@0.5. The bug is
+therefore sufficient on its own to drive the metric to exactly zero, even in
+the hypothetical scenario where the loss bug had not also existed and the
+network had learnt to localise objects correctly.
+
+\paragraph{Verification.} We encoded a known box with $w=h=0.3$ centred at
+cell~$(3,3)$, passed the tensor through \texttt{convert\_cellboxes}, and
+inspected the decoded width and height. The buggy code returned
+$w_{\text{dec}} = h_{\text{dec}} = 0.0429$, which is exactly $0.3/7$, while
+$x$ and $y$ round-tripped correctly. After removing the $1/S$ factor on
+$w_h$, the round-trip is exact to floating-point precision.
+
+\paragraph{Fix.} The fix is one line: drop the $1/S$ factor on $w_h$ while
+keeping it on $x$ and $y$. Variable renamed from \texttt{w\_y} to \texttt{w\_h}
+for clarity.
+
+% -------------------------------------------------------------
+\subsubsection{Why the unit-test suite did not catch either bug}
+\label{sec:bug:tests}
+
+Both bugs are detectable with a single round-trip check, but the existing test
+suite covered shapes and value ranges only. The pre-existing tests for
+\texttt{convert\_cellboxes} were:
+\begin{itemize}
+    \item \texttt{test\_convert\_cellboxes\_output\_shape}: asserts the output
+        is of shape $(B, S^2, 6)$.
+    \item \texttt{test\_convert\_cellboxes\_class\_indices\_in\_range}: asserts
+        that the predicted class index column lies in $[0, C-1]$.
+\end{itemize}
+
+\noindent Neither inspects the value of $w, h$. A test of the form ``encode a
+known box, decode it, assert that the recovered $w, h$ match'' would have
+detected Bug~2 trivially. Likewise, a loss test parameterised on $C$ with
+$C \in \{20, 80\}$ would have detected Bug~1 on the very first run: the
+``perfect prediction'' test at $C=80$ would have returned a non-zero loss for
+any prediction whose values at the bogus VOC slots did not happen to coincide
+with the class probabilities at those slots. We added both round-trip tests
+together with the fixes, as documented in
+Section~\ref{sec:experiments:v5}.
+
+\paragraph{Generalisable lesson.} The deeper failure here is not the specific
+indices but the assumption that a unit test that compiles, runs and passes
+is evidence that the function it tests is correct. The two tests above did
+exactly what they claimed and provided zero evidence about the function's
+mathematical correctness. In a detection pipeline, where intermediate tensors
+have many slots and most of them are unused by any single test image, the
+density of meaningful coverage per unit test is low. The round-trip checks
+we added pin down a single quantitative invariant per function and break
+when the function's mathematical contract changes, which is the level of
+specificity that is missing from shape-only assertions.
+
+% -------------------------------------------------------------
+\subsection{V5: applying the fixes}
+\label{sec:experiments:v5}
+
+V5 retains every hyper-parameter from V4---the same ResNet18 backbone, the
+same adapter, the same FC head, the same peak learning rate of
+$1\!\times\!10^{-4}$, the same gradient-clip threshold of $10.0$, the same
+50-epoch schedule, the same optimiser, batch size and warm-up
+configuration---and changes only the loss and decoding code as described in
+Section~\ref{sec:bug-investigation}. The point of holding everything else
+equal is to attribute any change in the result to the fixes alone.
+
+The first observation, available from the very first epoch of training, is
+that the magnitude of the loss is now in a completely different regime.
+Whereas V4 produced training and validation losses around $0.96$--$0.98$, V5
+produces values in the range of several hundred. The final training and
+validation losses are $336.34$ and $337.37$ respectively. We had expected this:
+the loss is reduced with \texttt{nn.MSELoss(reduction="sum")} over all 90
+slots of every cell of every image in a batch. In V1--V4, due to Bug~1, almost
+all the per-cell summands collapsed to zero, because they were multiplied by
+the ``exists\_box'' mask which was itself zero almost everywhere. The
+non-trivially zero contributions came almost entirely from a few elephant
+cells. Once the indices are corrected, every cell with an object contributes
+to the box and confidence terms, and every cell contributes to the no-object
+term and the class term. The absolute magnitude of the loss therefore rises
+by two orders of magnitude. This is not a regression; it is the loss finally
+seeing the data.
+
+At evaluation time, V5 produces $\mathrm{mAP}@0.5 = 0.0409$ at
+prob\_threshold~$0.1$ on the test set, and $0.0373$ at prob\_threshold~$0.3$
+(see Table~\ref{tab:run-summary}). This is the first non-zero detection score
+of the entire project. It is a low absolute number---we discuss in detail in
+Section~\ref{sec:results} why this is so, and in the Discussion section what
+would be required to push it higher---but it is a categorical change from the
+preceding four runs.
+
+The qualitative behaviour also changes. Detection boxes now cluster on actual
+objects in the scene, predicted classes correlate with ground-truth classes on
+the easy classes (animals with distinctive silhouettes, vehicles), and per-NMS
+detection counts drop to a sensible 2--6 boxes per image at
+prob\_threshold~$0.3$. We provide examples drawn from the test set, sorted by
+qualitative quality, in Section~\ref{sec:results}.
+
+% -------------------------------------------------------------
+\subsection{V6: continuation of V5}
+\label{sec:experiments:v6}
+
+V6 is a continuation of V5 rather than a separate experiment. We resumed
+training from the V5 ``best'' checkpoint and trained for an additional 10
+epochs, holding every other setting identical. The motivation was to verify
+that the V5 result was not a coincidence of the cosine schedule landing on a
+favourable epoch, and to give the model a bit more time near the bottom of the
+learning rate ramp.
+
+The final validation loss is essentially identical to V5 (337.40 vs.\ 337.37),
+indicating that the schedule has reached saturation. The test mAP improves
+marginally to $0.0415$ at prob\_threshold~$0.1$ and $0.0381$ at $0.3$. We treat
+V6 as the headline run of the project and use its checkpoint
+(\texttt{v6\_run/best\_v6.pth}) for all subsequent analyses in
+Section~\ref{sec:results}, including the full per-class AP table in
+Appendix~\ref{app:per-class-ap} and the qualitative figures.
+
+% -------------------------------------------------------------
+\subsection{Loss curves and a note on the magnitude shift}
+\label{sec:experiments:curves}
+
+Figure~\ref{fig:loss-curves} plots the training and validation loss curves
+across V4, V5 and V6 on a shared time axis. The visual jump in absolute
+magnitude between V4 and V5 is the empirical signature of the index fix. The
+right panel zooms in on V5+V6 to make the slow descent of both training and
+validation losses visible at the appropriate scale.
+
+\begin{figure}[!ht]
+\centering
+\includegraphics[width=0.95\textwidth]{loss_comparison_v3.png}
+\caption{Training and validation loss across runs. Left: V4 (bugs present)
+plateauing near $1.0$. Middle: V5+V6 (fixes applied) plateauing near $337$.
+Right: zoom on the last ten epochs of V5+V6, showing the slow improvement that
+the absolute scale makes invisible in the middle panel. The magnitude jump
+between V4 and V5 is itself the signature of the bug fix discussed in
+Section~\ref{sec:bug-investigation}.}
+\label{fig:loss-curves}
+\end{figure}
+
+A reader who reaches V5 in the training log without the context of
+Section~\ref{sec:bug-investigation} could reasonably mistake the rise in loss
+for a regression. We emphasise that the comparison between V4 and V5 is a
+comparison between two losses that compute fundamentally different
+quantities, not between a well-trained and a poorly-trained version of the
+same loss.

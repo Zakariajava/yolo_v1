@@ -1,0 +1,224 @@
+% =============================================================
+%  Section: Discussion
+% =============================================================
+
+This section interprets the numbers reported in Section~\ref{sec:results} in
+the light of the bug investigation of Section~\ref{sec:bug-investigation}
+and the architectural choices of Section~\ref{sec:impl:model}, distinguishes
+between the failure modes that are inherent to the YOLOv1 formulation and
+the ones that are specific to our training regime, lists the lessons that
+generalise beyond this project, and sketches the modifications that would
+most directly raise the absolute performance within the same family of
+detectors.
+
+% -------------------------------------------------------------
+\subsection{Why the absolute mAP is low}
+\label{sec:disc:why-low}
+
+The headline figure of $\mathrm{mAP}@0.5 = 0.0415$ on the COCO test split is
+roughly a factor of fifteen below the $63.4$ that
+\citet{redmon2016you} report on VOC~2007. Four factors, each independent of
+implementation correctness, contribute roughly multiplicatively to this gap.
+
+\paragraph{COCO is a substantially harder benchmark than VOC.} The class
+count rises from $20$ to $80$, which by itself dilutes the average across
+more failure-prone categories. More importantly, the object size
+distribution shifts: COCO contains a long tail of small objects (a
+substantial fraction of annotations are smaller than the $64\!\times\!64$
+footprint of a single cell in our $S=7$ grid, see
+Section~\ref{sec:results:perclass}), and many of its scenes are
+foreground-clustered in ways that VOC is not (multiple cutlery instances on
+dining tables, multiple people on streets, multiple sports objects in
+foreground photographs). The single-object-per-cell constraint of YOLOv1 is
+much more frequently activated on COCO than on VOC.
+
+\paragraph{Training is roughly half the duration of the paper.} V6 trains for
+$60$ epochs total; \citet{redmon2016you} train for $135$. The cosine schedule
+in our run reaches its floor by epoch $\sim\!45$, so additional epochs at
+that learning rate are unlikely to extract much more from the current
+configuration; a fresh schedule at lower peak rate could.
+
+\paragraph{The backbone is smaller than the paper's.} ResNet18 carries
+$\sim\!11.2$~M parameters in the convolutional trunk;
+Darknet24~\citep{redmon2016you} carries $\sim\!39$~M. ResNet18 also has a
+shallower receptive field at the relevant spatial resolution, which limits
+the contextual information available to a single-cell prediction. We chose
+ResNet18 for tractability (a pretrained checkpoint ships with torchvision and
+fits a 50-epoch budget on a single H200), not because it is optimal for the
+task. The trade-off paid in headline mAP is the obvious one.
+
+\paragraph{Data augmentation is minimal.} \citet{redmon2016you} apply random
+scaling, translation, exposure and saturation jitter, in addition to the
+standard horizontal flip. Our pipeline applies only resize. Detection
+benchmarks are particularly sensitive to scale augmentation because every
+training sample teaches the network about a single absolute object size, and
+without augmentation the distribution of trained object sizes is exactly the
+distribution in the training set. Mosaic augmentation, introduced by later
+YOLO variants, would also help by densifying the number of objects per
+training image.
+
+\medskip
+
+\noindent The combined effect of these four factors is consistent with an
+order-of-magnitude penalty on mAP, which is what we observe. Crucially, none
+of the four is an implementation bug; they are deliberate or pragmatic
+choices made within the scope of this project. The bugs of
+Section~\ref{sec:bug-investigation} are an entirely separate axis, and they
+have been verified to be absent in V5--V6 by the round-trip checks discussed
+in that section and reinforced by tests added together with the fixes.
+
+% -------------------------------------------------------------
+\subsection{Why specific classes fail}
+\label{sec:disc:class-failures}
+
+The per-class breakdown of Section~\ref{sec:results:perclass} identified four
+recurring failure modes among the twenty COCO classes with $\mathrm{AP}=0$:
+sub-cell objects, clustered tableware, rare classes and sports objects in
+human-dominated foregrounds. Each of these is an interaction between an
+architectural choice and a property of the dataset.
+
+\paragraph{Sub-cell objects and the $S=7$ grid.} Each grid cell covers a
+$64\!\times\!64$ region of the $448\!\times\!448$ input. An object whose
+bounding box is smaller than this in both dimensions cannot be precisely
+localised by the regression head: the centre regression target $(x, y)$
+quantises to within the cell, and the $\sqrt{w}, \sqrt{h}$ regression
+targets are pulled towards values whose dynamic range the network has
+limited opportunity to learn. Toothbrushes, hair driers, scissors and remote
+controls fall into this regime in a substantial fraction of their COCO
+appearances.
+
+\paragraph{Clustered tableware and the one-object-per-cell rule.} When
+multiple objects of the same class share a cell in the ground truth, only
+one is retained as the regression target; the rest are silently dropped.
+Fork/knife/spoon scenes are the canonical case, but the same mechanism
+applies to multiple birds on a wire, multiple bottles on a shelf, or
+multiple cars in a parking lot. At evaluation time, the missed instances
+count as false negatives, depressing recall and therefore AP.
+
+\paragraph{Rare classes.} Hair drier (5 ground-truth instances in the test
+split), toaster (9), parking meter (59) and similar low-frequency classes
+have not seen enough training examples to learn a robust template. The
+exception is bear (67 instances in test, $\mathrm{AP}=0.17$): rarity alone
+is not disqualifying, provided the silhouette is distinctive enough to be
+learnt from a few hundred training examples.
+
+\paragraph{Foreground competition.} Sports objects (ball, frisbee, baseball
+bat, baseball glove, snowboard) frequently appear in scenes whose dominant
+object is a person. The class loss for the responsible cell is then in
+direct competition with the much stronger and more consistent gradient from
+the co-located person instance. The result is a cell that learns to
+classify the scene as ``person'' regardless of which class actually owns the
+cell's centre.
+
+\medskip
+
+\noindent None of these failure modes are unique to our implementation;
+\citet{redmon2016you} discusses several of them as known limitations of
+YOLOv1, particularly the inability to handle clusters of small objects.
+What is specific to our setting is the \emph{degree} to which they hurt the
+metric: COCO triggers all four failure modes more often than VOC does, and
+our smaller backbone leaves less spare capacity to overcome them.
+
+% -------------------------------------------------------------
+\subsection{Lessons that generalise beyond this project}
+\label{sec:disc:lessons}
+
+The bug investigation in Section~\ref{sec:bug-investigation} exposes a
+handful of failure modes whose details are specific to YOLO but whose shape
+generalises to any deep-learning project that involves structured outputs.
+We summarise them here.
+
+\paragraph{A passing test is not evidence of correctness.} The pre-fix unit
+tests for \texttt{YoloLoss}, \texttt{convert\_cellboxes} and the dataset all
+passed; the headline result was nonetheless zero. The tests covered tensor
+shapes, dtype, value ranges and trivial sanity checks (``the loss runs
+without crashing'', ``the output has the expected dimension'') but did not
+encode any quantitative invariant of what the function is supposed to
+compute. A test of the form ``encode a known box, decode it, assert the
+recovered box matches'' is structurally different from a test of the form
+``the output has the right shape'', and only the former would have caught
+Bug~2. The same gap exists in many production codebases, and is worth
+auditing systematically rather than only when a result is mysterious.
+
+\paragraph{Coordinate round-trips deserve explicit checks.} Detection
+pipelines move bounding boxes through three different coordinate systems
+(absolute pixels, image-normalised, cell-relative for $x,y$) and one
+quantisation step (assignment to a grid cell). Any one of these steps can
+silently distort the output; the cumulative effect is hard to debug from
+the model's predictions alone. An explicit round-trip---encode a known box
+through the dataset code, decode it through the post-processing code, and
+assert equality---would have detected Bug~2 in a single line. We added such
+a test together with the fix.
+
+\paragraph{In-place tensor ops can sever autograd.} The in-place
+\texttt{box\_predictions[..., 2:4] = sign(.) * sqrt(.)} pattern shipped in
+an earlier version of the loss was syntactically valid, did not raise an
+exception, returned the correct loss value, and silently broke the backward
+pass through the $w, h$ pathway. PyTorch generally accepts this pattern;
+it only objects when the result tensor is also needed by a later operation
+in the same forward pass. The detection is essentially impossible without
+either a unit test for gradient flow through the offending pathway, or the
+deliberate habit of expressing per-cell transforms with \texttt{torch.cat}
+rather than indexed assignment.
+
+\paragraph{A converging loss is not evidence of a learning model.}
+The most counter-intuitive observation of the bug investigation is that
+V1--V4 produced training and validation losses that decreased monotonically
+across epochs, plateaued at sensible-looking values (around $1.0$ for V4),
+and gave a strong impression that the model was learning. They were not.
+The loss they were minimising was an arithmetically valid quantity that the
+network could indeed reduce, but it was not the YOLO loss; it was a
+projection of the YOLO loss onto a subset of the output channels that did
+not include the box-coordinate slots. A useful generalisation: when a model
+that should detect things detects nothing, the question
+``is the loss the loss?'' should rank above
+``are the hyper-parameters tuned?''.
+
+% -------------------------------------------------------------
+\subsection{Future work}
+\label{sec:disc:future}
+
+The most direct routes to a higher absolute mAP, ordered by expected impact
+within the constraints of the YOLOv1 architectural family, are:
+
+\begin{enumerate}
+    \item \emph{Larger backbone with a comparable budget.} Replacing
+        ResNet18 with ResNet50 roughly triples the trunk parameter count and
+        approximately doubles the convolutional depth. On ImageNet
+        classification this is worth several percentage points of top-1
+        accuracy; the corresponding gain on COCO detection should be larger
+        than that of a single hyper-parameter sweep at the current backbone.
+    \item \emph{Finer grid ($S = 14$).} A $14\!\times\!14$ grid at the
+        current $448\!\times\!448$ input would shrink the per-cell footprint
+        to $32\!\times\!32$ pixels, which is below the threshold at which the
+        sub-cell-object failure mode of Section~\ref{sec:disc:class-failures}
+        triggers for most COCO classes. This requires either dropping the
+        adapter's downsampling stride or doubling the input resolution to
+        $896\!\times\!896$ (at quadratic cost in inference time).
+    \item \emph{Mosaic augmentation.} The mosaic technique introduced by
+        later YOLO variants stitches four random training images into a
+        single sample, multiplying the number of objects per training
+        example by four and indirectly training the network on object
+        instances in a wider range of contexts. This is cheap to implement
+        and has been reported to be worth several mAP points on COCO with
+        small detectors.
+    \item \emph{Anchor boxes.} \citet{redmon2018yolov3} replace the
+        ``responsible box'' assignment of YOLOv1 with a small set of
+        per-grid-cell anchor priors (clustered $k$-means on the training-set
+        boxes) and convert the box regression from direct $(x, y, w, h)$
+        prediction to a delta against each anchor. This decouples the
+        regression target from the per-cell competition between boxes and
+        substantially improves localisation. It would require changes in the
+        dataset, the loss and the post-processing simultaneously, and is
+        therefore the largest item on this list.
+    \item \emph{Longer training, more aggressive LR.} V5--V6 stop at the
+        cosine floor after $60$ total epochs. A fresh schedule of
+        $150$~epochs with a peak rate of $5\!\times\!10^{-4}$ (intermediate
+        between V1's $10^{-3}$ and V4's $10^{-4}$) and the existing
+        gradient-clip threshold of~$10$ would likely yield additional
+        improvement, although less than any of the four items above.
+\end{enumerate}
+
+\noindent Items 1, 3 and 5 are continuous improvements; item 2 is an
+architectural change but within the YOLOv1 framework; item 4 effectively
+constitutes YOLOv2 and would be a substantially different system.
