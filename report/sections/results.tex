@@ -1,0 +1,333 @@
+% =============================================================
+%  Section: Results
+% =============================================================
+
+The results in this section are computed on the held-out COCO test split (5\,\%
+of the consolidated dataset, $6\,165$ images, $42\,795$ ground-truth bounding
+boxes after the removal of crowd annotations; cf.\ the discussion of the
+one-object-per-cell drop in Section~\ref{sec:experiments:setup}). All
+numbers correspond to the V6 checkpoint (\texttt{v6\_run/best\_v6.pth})
+introduced in Section~\ref{sec:experiments:v6}. Inference uses per-class non-maximum
+suppression with an IoU threshold of $0.5$ and is run at two prediction
+probability thresholds, $0.1$ (permissive) and $0.3$ (stricter), in order to
+characterise the precision/recall trade-off rather than commit to a single
+operating point.
+
+% -------------------------------------------------------------
+\subsection{Headline metric}
+\label{sec:results:headline}
+
+Table~\ref{tab:headline} reports the mean Average Precision at IoU~$0.5$
+(mAP@0.5) on the COCO test split for both probability thresholds. The
+headline number for the project, used in the abstract and the conclusions, is
+$\mathrm{mAP}@0.5 = 0.0415$ at probability threshold~$0.1$.
+
+\begin{table}[!ht]
+\centering
+\caption{Final detection metrics of the V6 checkpoint on the COCO test split.
+Averaged over the 80 COCO classes, all of which have at least one ground-truth
+instance in the test split.}
+\label{tab:headline}
+\small
+\begin{tabular}{lcc}
+\toprule
+\textbf{Probability threshold} & \textbf{mAP@0.5} & \textbf{Number of classes with AP $>$ 0} \\
+\midrule
+0.1 & \textbf{0.0415} & 60 / 80 \\
+0.3 & 0.0381          & 58 / 80 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent We make no claim of competitiveness with current detectors; the
+purpose of the figure is to bound the absolute performance of a paper-faithful
+YOLOv1 implementation, re-targeted to COCO with a ResNet18 backbone, trained
+for $\sim 60$ epochs in total on a single GPU. The remainder of this section
+is dedicated to characterising \emph{where} the model spends and fails to
+spend that detection budget.
+
+% -------------------------------------------------------------
+\subsection{Per-class breakdown}
+\label{sec:results:perclass}
+
+Of the 80 COCO classes evaluated at threshold~$0.1$, the AP distribution is
+strongly skewed: the top decile (eight classes) accounts for the bulk of the
+mAP value, while a long tail of twenty classes registers exactly zero. The
+full ranked table for both thresholds is provided in
+Appendix~\ref{app:per-class-ap}; we discuss the structure of the distribution
+here.
+
+\paragraph{Top performers.} Table~\ref{tab:top10} lists the ten classes with
+the highest AP at probability threshold~$0.1$. The pattern is consistent:
+classes with large, structurally distinctive silhouettes
+(zebra stripes, giraffe necks, elongated train and airplane fuselages) and
+classes that tend to be photographed as the main subject of the image
+(cat, bear, elephant, bus) dominate the head of the distribution.
+
+\begin{table}[!ht]
+\centering
+\caption{Top-10 classes by AP@0.5 (V6, threshold~$0.1$). The ``GT in test''
+column is the number of ground-truth instances of the class in the test
+split.}
+\label{tab:top10}
+\small
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Class} & \textbf{AP@0.5} & \textbf{GT in test} & \textbf{Class idx} \\
+\midrule
+zebra      & 0.3593 &  236 & 22 \\
+train      & 0.3265 &  212 &  6 \\
+giraffe    & 0.3107 &  225 & 23 \\
+cat        & 0.2575 &  255 & 15 \\
+airplane   & 0.1857 &  238 &  4 \\
+pizza      & 0.1795 &  257 & 53 \\
+bear       & 0.1698 &   67 & 21 \\
+elephant   & 0.1634 &  223 & 20 \\
+bus        & 0.1595 &  246 &  5 \\
+toilet     & 0.1435 &  237 & 61 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Classes with $\mathrm{AP}=0$.} At threshold~$0.1$, twenty COCO
+classes register zero detections that pass mAP's IoU criterion. Inspecting
+this set reveals four distinct failure modes, each of which is consistent with
+the documented weaknesses of YOLOv1~\citep{redmon2016you} and is amplified by
+our particular setting.
+
+\begin{itemize}
+    \item \emph{Objects smaller than one grid cell.} With $S=7$ and an input
+        resolution of $448\times 448$ pixels, each grid cell covers a
+        $64\times 64$ patch of the image. Toothbrushes, hair driers, scissors
+        and remote controls occupy substantially less than this footprint in
+        a typical photograph. YOLOv1's ``one object per cell'' constraint
+        means the detection head has no way to localise multiple sub-cell
+        objects, and the regression target for the single object it does
+        attempt to localise is dominated by quantisation noise.
+    \item \emph{Thin or elongated tableware in cluttered scenes.} Fork,
+        knife, spoon and hot dog all appear most frequently in dining table
+        and food-tray scenes where many of them are grouped within a single
+        cell. The same constraint applies: only one of them can be
+        ``responsible'' per cell.
+    \item \emph{Rare classes.} Hair drier (5 GT in the test split), toaster
+        (9), parking meter (59), scissors (78), toothbrush (80) and stop sign
+        (76) have so few training instances that the model has had limited
+        opportunity to learn a robust template for them. The exception in the
+        top performers, bear (67 GT), shows that rarity alone is not
+        sufficient to drive AP to zero; rarity \emph{combined with} a small
+        or non-distinctive silhouette is.
+    \item \emph{Sports objects in cluttered foregrounds.} Sports ball,
+        frisbee, baseball bat, baseball glove and snowboard typically appear
+        in scenes dominated by human figures with the object partially
+        occluded or near the image periphery. The class loss for the
+        responsible cell is therefore in direct competition with the much
+        stronger gradient from the co-located ``person'' instance.
+\end{itemize}
+
+\paragraph{The frequency--AP decoupling.} A naive expectation is that AP
+should grow monotonically with the number of ground-truth instances seen
+during training. The data refutes this clearly. The ``person'' class is the
+most common in COCO by a wide margin (8\,779 GT instances in the test split,
+roughly 17\,\% of all annotations) and attains only $\mathrm{AP}=0.035$. The
+``car'' class (1\,382 GT) attains $0.005$. ``Chair'' (1\,336 GT) attains
+$0.002$. Conversely, zebra and giraffe, with under 240 instances each, are at
+the top. The discriminating factor is not frequency but a combination of size,
+distinctiveness and image context.
+
+\paragraph{Effect of the probability threshold.} Moving from threshold~$0.1$
+to $0.3$ drops the mAP by approximately $8\,\%$ (from $0.0415$ to $0.0381$).
+Most of the absolute loss comes from classes whose model output is uncertain
+even when correct: \emph{zebra} loses $2.2$ percentage points of AP and
+\emph{giraffe} $1.2$ percentage points, while \emph{train} is essentially
+unaffected ($-0.2$ points). The set of zero-AP classes grows by two
+(\emph{mouse} and \emph{cell phone}, both flipping from $\sim\!10^{-4}$ to
+$0$). The shift is consistent with a calibration in which true positives
+at this stage of training are concentrated near the lower confidence values
+rather than the higher ones.
+
+% -------------------------------------------------------------
+\subsection{Qualitative analysis}
+\label{sec:results:qualitative}
+
+We illustrate the model's behaviour with examples drawn from the test split.
+The selection is partitioned into three subjective categories: \emph{good}
+(every ground-truth object is detected with a class-correct, well-localised
+box and few false positives), \emph{medium} (the primary subject is
+recognised but localisation is imperfect or one of several objects is missed)
+and \emph{bad} (the prediction is essentially uncorrelated with the
+ground truth, or the only detected box is a false positive of a different
+class).
+
+\begin{figure}[!ht]
+\centering
+\begin{subfigure}[t]{0.32\textwidth}
+    \includegraphics[width=\linewidth]{pred_015522_best_v6.png}
+    \caption{Multiple distinct subjects.}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.32\textwidth}
+    \includegraphics[width=\linewidth]{pred_059397_best_v6.png}
+    \caption{Single subject, tight box.}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.32\textwidth}
+    \includegraphics[width=\linewidth]{pred_089898_best_v6.png}
+    \caption{High-AP class on a clean background.}
+\end{subfigure}
+\caption{Good detections (V6 checkpoint, probability threshold~$0.3$). The
+common factor across the good set is a large, centrally placed subject from
+one of the head classes of the distribution analysed in
+Section~\ref{sec:results:perclass}.}
+\label{fig:preds-good}
+\end{figure}
+
+\begin{figure}[!ht]
+\centering
+\begin{subfigure}[t]{0.32\textwidth}
+    \includegraphics[width=\linewidth]{pred_001560_best_v6.png}
+    \caption{Localisation drifts off the subject.}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.32\textwidth}
+    \includegraphics[width=\linewidth]{pred_016274_best_v6.png}
+    \caption{Class correct, secondary object missed.}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.32\textwidth}
+    \includegraphics[width=\linewidth]{pred_079617_best_v6.png}
+    \caption{Box too large for the object.}
+\end{subfigure}
+\caption{Medium-quality detections. The detector identifies the dominant
+object in the scene but with imperfect localisation, or misses secondary
+objects whose centres fall in cells already claimed by another instance.}
+\label{fig:preds-medium}
+\end{figure}
+
+\begin{figure}[!ht]
+\centering
+\begin{subfigure}[t]{0.32\textwidth}
+    \includegraphics[width=\linewidth]{pred_000001_best_v6.png}
+    \caption{Class confusion.}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.32\textwidth}
+    \includegraphics[width=\linewidth]{pred_026429_best_v6.png}
+    \caption{No detection above threshold.}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.32\textwidth}
+    \includegraphics[width=\linewidth]{pred_062225_best_v6.png}
+    \caption{Cluttered scene with small objects.}
+\end{subfigure}
+\caption{Failure cases. Either the prediction is of a different class than
+the ground truth (left), no prediction survives the probability filter
+(middle), or the scene contains small objects below the effective resolution
+of the $S=7$ grid (right).}
+\label{fig:preds-bad}
+\end{figure}
+
+The qualitative split corroborates the per-class analysis: every example in
+the good set features a single dominant subject from a head class, the medium
+set fails on either secondary objects or imprecise localisation, and the bad
+set is dominated by small-object and cluttered-scene cases. We did not curate
+the bad examples to avoid the head classes; the bad failures simply occur
+mostly outside the head.
+
+% -------------------------------------------------------------
+\subsection{Inference latency}
+\label{sec:results:latency}
+
+Although YOLOv1's original motivation was real-time inference, latency is not
+the centrepiece of this work, because the training-time bug investigation in
+Section~\ref{sec:bug-investigation} dominates the contribution. For
+completeness, we report the forward-pass latency of the V6 checkpoint measured
+by \texttt{scripts/realtime\_detect.py} in its \texttt{-{}-benchmark} mode,
+which runs the model on synthetic batch-size-1 inputs after a warm-up and
+records the per-call wall-clock time with explicit
+\texttt{torch.cuda.synchronize} barriers before and after each forward pass.
+
+\begin{table}[!ht]
+\centering
+\caption{Forward-only inference latency of the V6 model on an NVIDIA
+GeForce RTX~5070~Ti~Laptop, batch size~1, $448\!\times\!448$ input. Statistics
+over 50 timed iterations after a 20-iteration warm-up. Peak GPU memory
+allocated: $\sim\!1.9$~GB.}
+\label{tab:latency}
+\small
+\begin{tabular}{lrr}
+\toprule
+\textbf{Statistic} & \textbf{Latency (ms)} & \textbf{Throughput (FPS)} \\
+\midrule
+mean         & 5.32 & 188.1 \\
+median       & 5.24 & 190.9 \\
+$p_{95}$     & 6.27 & 159.5 \\
+$p_{99}$     & 6.76 & 147.9 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent The model comfortably exceeds the real-time threshold typically
+associated with the original paper, which reports 45~FPS for the base YOLO
+model on a Titan~X. The gap is mostly explained by hardware
+(an Ada-generation laptop GPU vs.\ a 2016-era Titan~X), not by the
+architecture: the parameter count of our model (248~M) is in fact larger than
+the paper's, but it is dominated by a single dense layer whose evaluation is
+trivial on modern hardware. When the same script is run in its interactive
+webcam mode---which adds frame capture, BGR$\to$RGB conversion, NMS, drawing
+and a GUI window to the inference loop---throughput is correspondingly lower
+and limited primarily by the webcam's frame-rate cap.
+
+% -------------------------------------------------------------
+\subsection{Comparison with the original paper}
+\label{sec:results:vs-paper}
+
+Table~\ref{tab:vs-paper} contrasts the configuration and headline result of
+this work with the figures reported by \citet{redmon2016you}. The two are not
+directly comparable as benchmarks---the datasets differ (COCO vs Pascal~VOC)
+and so do the backbones and training budgets---but the comparison is useful
+to bound the order-of-magnitude gap and to make explicit which contributing
+factors are deliberate (dataset, backbone) and which are pragmatic (training
+length, augmentation budget).
+
+\begin{table}[!ht]
+\centering
+\caption{Side-by-side comparison with the original YOLOv1 paper.}
+\label{tab:vs-paper}
+\small
+\begin{tabular}{lll}
+\toprule
+\textbf{Aspect} & \textbf{\citet{redmon2016you}} & \textbf{This work (V6)} \\
+\midrule
+Dataset                & VOC 2007 + 2012 (20 classes)   & COCO 2017 (80 classes) \\
+Backbone               & Darknet24 (custom)             & ResNet18 (pretrained) \\
+Backbone pretraining   & Manual on ImageNet             & torchvision IMAGENET1K\_V1 \\
+Peak learning rate     & $10^{-2}$ (manual schedule)    & $10^{-4}$ \\
+LR schedule            & Manual ($10^{-3}\!\to\!10^{-2}\!\to\!10^{-3}\!\to\!10^{-4}$) & Linear warm-up + cosine \\
+Epochs                 & 135                             & 60 (V5 + V6 combined) \\
+Batch size             & 64                              & 32 \\
+Input resolution       & $448\times 448$                 & $448\times 448$ \\
+Grid ($S$)             & 7                               & 7 \\
+Boxes per cell ($B$)   & 2                               & 2 \\
+Output channels per cell & $20 + 5\cdot 2 = 30$         & $80 + 5\cdot 2 = 90$ \\
+Augmentation           & Crops, exposure, saturation, scaling & Resize only \\
+$\lambda_{\text{coord}}$ & 5                            & 5 \\
+$\lambda_{\text{noobj}}$ & 0.5                          & 0.5 \\
+Hardware               & NVIDIA Titan~X (2016)          & NVIDIA H200~NVL (2024) \\
+Wall-clock training    & $\sim$ 1 week                  & $\sim$ 2 hours \\
+\midrule
+\textbf{mAP@0.5}       & 63.4 (VOC 2007 test)            & 4.15 (COCO test, threshold~0.1) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent The gap of roughly $\times 15$ in headline mAP is dominated by four
+factors that we discuss in detail in the Discussion: (i) COCO is a
+substantially harder benchmark than VOC, both in terms of class count and in
+terms of object size distribution, (ii) the original paper trains for more
+than twice as long, (iii) ResNet18 is roughly $3\times$ smaller in parameter
+count than Darknet24 in the backbone (although our overall model is larger
+due to the FC head), and (iv) the augmentation pipeline used in the paper is
+considerably richer than our resize-only transform.
+
+We deliberately do not interpret the residual gap as evidence of an
+implementation problem after V5/V6: the bug investigation in
+Section~\ref{sec:bug-investigation} characterised the implementation bugs
+exhaustively, the round-trip and synthetic verifications certified that the
+loss and the coordinate decoder are now correct, and the remaining headroom
+is the expected consequence of the four factors above. The Discussion section
+sketches what would be required to close part of this gap within the same
+architectural family.

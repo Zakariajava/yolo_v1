@@ -1,0 +1,400 @@
+% =============================================================
+%  Section: Implementation
+% =============================================================
+
+This section describes the engineering decisions that turn the YOLOv1
+formulation of Section~\ref{sec:theoretical_framework} into a runnable PyTorch system. We cover, in order,
+the data preparation pipeline, the model architecture, the loss
+implementation, the training infrastructure and the evaluation pipeline. The
+specific bugs that affected V1--V4 are not discussed here; they belong to the
+narrative of Section~\ref{sec:bug-investigation}.
+
+% -------------------------------------------------------------
+\subsection{Dataset preparation}
+\label{sec:impl:dataset}
+
+The training pipeline assumes a single consolidated, cleaned and pre-split
+dataset rooted at \texttt{data/coco/}. Constructing it from a freshly
+downloaded COCO~2017 archive is a three-step process that we run once,
+offline, before the first training run.
+
+\paragraph{Step 1 -- consolidation.} The COCO 2017 archive ships as two
+disjoint image folders (\texttt{train2017/} with 118\,287 images and
+\texttt{val2017/} with 5\,000 images) and two corresponding annotation files.
+\texttt{scripts/consolidate\_dataset.py} merges them into a single flat
+\texttt{images/} directory of $123\,287$ images and a single
+\texttt{instances\_all.json}. COCO filenames are globally unique, so the move
+is collision-free.
+
+\paragraph{Step 2 -- cleaning.} The shipped annotation file is approximately
+$550$\,MB; most of that mass is segmentation polygons, captions and licence
+metadata that we do not use. \texttt{scripts/clean\_dataset.py} reduces each
+record to the minimum the dataset class needs: \texttt{(id, file\_name, width,
+height)} per image, \texttt{(image\_id, bbox, category\_id)} per annotation,
+and \texttt{(id, name)} per category. In the same pass it removes the
+$10\,498$ annotations marked \texttt{iscrowd=1}, which are intended as
+``ignore'' regions and would confuse a single-box-per-cell detector. The
+cleaned file is approximately seven times smaller and loads under three
+seconds on the H200's NVMe.
+
+\paragraph{Step 3 -- deterministic split.}
+\texttt{scripts/prepare\_splits.py} performs a single random
+$90\,\%/5\,\%/5\,\%$ split with seed~$42$, producing three COCO-format files:
+\texttt{instances\_train.json} ($110\,957$ images), \texttt{instances\_val.json}
+($6\,165$ images) and \texttt{instances\_test.json} ($6\,165$ images). The
+seed is fixed so that the test split is genuinely held out across all six
+training runs; any reshuffling between V1 and V6 would have made it impossible
+to compare their detection metrics on common terms.
+
+\paragraph{Annotation conversion.} Inside the dataset class
+(\texttt{src/dataset.py}), each COCO bounding box
+$(x_{\text{tl}}, y_{\text{tl}}, w_{\text{px}}, h_{\text{px}})$ in
+\emph{absolute pixel} coordinates is converted to the YOLO grid format used
+throughout the rest of the pipeline:
+\begin{align}
+  x_{\text{norm}} &= \frac{x_{\text{tl}} + w_{\text{px}}/2}{W_{\text{img}}}, &
+  y_{\text{norm}} &= \frac{y_{\text{tl}} + h_{\text{px}}/2}{H_{\text{img}}}, \\
+  w_{\text{norm}} &= \frac{w_{\text{px}}}{W_{\text{img}}}, &
+  h_{\text{norm}} &= \frac{h_{\text{px}}}{H_{\text{img}}}.
+\end{align}
+
+\noindent The bounding box is then assigned to the unique grid cell
+$(i, j) = (\lfloor S\,y_{\text{norm}} \rfloor, \lfloor S\,x_{\text{norm}} \rfloor)$
+whose centre coordinates inside that cell are
+$x_{\text{cell}} = S\,x_{\text{norm}} - j$ and
+$y_{\text{cell}} = S\,y_{\text{norm}} - i$. The width and height are kept
+image-relative; this asymmetry between $(x_{\text{cell}}, y_{\text{cell}})$
+and $(w_{\text{norm}}, h_{\text{norm}})$ is the source of Bug~2 discussed in
+Section~\ref{sec:bug:wh-decoding}.
+
+\paragraph{One object per cell.} When two ground-truth box centres fall in
+the same cell, the dataset retains only the first one encountered in the
+iteration order. This implements the architectural constraint stated by
+\citet{redmon2016you} that ``each grid cell predicts only one set of class
+probabilities, regardless of the number of boxes $B$.'' We do not attempt to
+detect or report such collisions during training; on COCO they are
+infrequent at $S=7$ relative to the total annotation count, but they account
+for a non-trivial fraction of the missed detections discussed in
+Section~\ref{sec:results:perclass}.
+
+\paragraph{Input transform.} Because the backbone in V4--V6 is initialised
+from torchvision's ImageNet-pretrained ResNet18, the input tensor must follow
+the ImageNet normalisation convention. The dataset applies
+$\mu_{\text{RGB}} = (0.485,\,0.456,\,0.406)$ and
+$\sigma_{\text{RGB}} = (0.229,\,0.224,\,0.225)$ after \texttt{ToTensor}
+\citep{krizhevsky2012imagenet,russakovsky2015imagenet}. Visualisation code in
+\texttt{src/visualization.py} undoes this normalisation before rendering with
+PIL; failing to do so produces tensors with the right shape but visually
+incoherent colour distributions, which would otherwise hide localisation
+problems in qualitative review.
+
+% -------------------------------------------------------------
+\subsection{Model architecture}
+\label{sec:impl:model}
+
+The architecture used in V4, V5 and V6 is a three-stage pipeline: a
+pretrained ResNet18 convolutional trunk, a learnt adapter that bridges the
+backbone's spatial resolution to the detector head, and a fully connected
+detection head whose final layer matches the YOLO grid output. The full
+data-flow is summarised in Figure~\ref{fig:arch}.
+
+\begin{figure}[!ht]
+\centering
+\begin{tikzpicture}[
+    node distance=4mm,
+    every node/.style={font=\small},
+    block/.style={draw, rounded corners, align=center, minimum width=7.8cm, minimum height=8mm, inner sep=2pt},
+    bb/.style    ={block, fill=blue!8,   draw=blue!50!black},
+    adapter/.style={block, fill=orange!12, draw=orange!60!black},
+    head/.style  ={block, fill=green!10,  draw=green!50!black},
+    io/.style    ={block, fill=gray!10,   draw=black!60, minimum width=5cm},
+    arr/.style   ={-{Latex[length=2mm]}, thick},
+    tag/.style   ={font=\footnotesize\itshape, text=black!70}
+]
+% Input
+\node[io] (input)  {Input image tensor $\;\;(B,\,3,\,448,\,448)$};
+
+% Backbone block (single node, with internal text)
+\node[bb, below=of input, align=center] (bb) {%
+    \textbf{ResNet18 backbone (pretrained, ImageNet)}\\[1pt]
+    \texttt{conv1, bn1, relu, maxpool}\\
+    \texttt{layer1, layer2, layer3, layer4}\\[1pt]
+    output: $(B,\,512,\,14,\,14)$ \hfill $\approx 11.2$\,M params};
+
+% Adapter block
+\node[adapter, below=of bb, align=center] (ad) {%
+    \textbf{Adapter (newly initialised)}\\[1pt]
+    \texttt{Conv2d}$(512\!\to\!1024,\,3\!\times\!3,\,s\!=\!2)$ + BN + LeakyReLU\\
+    \texttt{Conv2d}$(1024\!\to\!1024,\,3\!\times\!3,\,s\!=\!1)$ + BN + LeakyReLU\\[1pt]
+    output: $(B,\,1024,\,7,\,7)$ \hfill $\approx 14.2$\,M params};
+
+% Head block
+\node[head, below=of ad, align=center] (hd) {%
+    \textbf{Detection head (newly initialised)}\\[1pt]
+    \texttt{Flatten} $\to$
+    \texttt{Linear}$(50176\!\to\!4096)$ + LeakyReLU + Dropout(0.5)\\
+    \texttt{Linear}$(4096\!\to\!4410)$\\[1pt]
+    output: $(B,\,4410) = (B,\,S\!\cdot\! S\!\cdot\! (C\!+\!5B))$ \hfill $\approx 223$\,M params};
+
+% Reshape
+\node[io, below=of hd] (out) {Per-cell tensor $(B,\,7,\,7,\,90)$};
+
+% Arrows
+\draw[arr] (input) -- (bb);
+\draw[arr] (bb)    -- (ad);
+\draw[arr] (ad)    -- (hd);
+\draw[arr] (hd)    -- (out);
+
+% Total params annotation
+\node[tag, right=2mm of hd] {\shortstack[l]{Total trainable: \\ $\approx 248$\,M}};
+\end{tikzpicture}
+\caption{Architecture used in V4--V6. Blue: pretrained ResNet18 trunk loaded
+from torchvision (\texttt{ResNet18\_Weights.DEFAULT}). Orange: convolutional
+adapter that downsamples spatially from $14\!\times\!14$ to $7\!\times\!7$
+and widens channel depth from $512$ to $1024$. Green: the two-layer fully
+connected head; the first dense layer (50\,176~$\to$~4\,096) accounts for
+roughly $90\,\%$ of the model's trainable parameters. The final tensor is
+reshaped to $(B,\,7,\,7,\,90)$ for loss and decoding; the channel layout per
+cell is the $C\!=\!80$ COCO layout defined in
+Section~\ref{sec:theory:grid}.}
+\label{fig:arch}
+\end{figure}
+
+\paragraph{Backbone choice.} The original YOLOv1 \citep{redmon2016you} uses a
+custom 24-layer Darknet trunk pretrained on ImageNet. Reproducing this
+backbone from scratch and then pretraining it on ImageNet was outside the
+compute budget of this project. ResNet18 \citep{he2016deep} is the smallest
+member of the residual-network family for which torchvision ships a
+ready-to-use pretrained checkpoint, and its output stride and channel count
+($\times 32$ downsampling, $512$ channels) match a YOLO grid of $S=7$ on a
+$448 \times 448$ input. The exchange we accept is a smaller, faster,
+already-pretrained trunk in exchange for a less expressive feature backbone
+than the paper's; we revisit this trade-off in the Discussion.
+
+\paragraph{Adapter.} ResNet18's \texttt{layer4} produces $(B, 512, 14, 14)$
+feature maps for a $448 \times 448$ input. The detection head needs
+$(B, 1024, 7, 7)$ to match the original Darknet head's expected size. The
+adapter is the cheapest module that bridges the two: a stride-2 convolution
+halves the spatial resolution while doubling the channel depth, and a
+stride-1 convolution refines the resulting representation. Both convolutions
+are followed by batch normalisation~\citep{ioffe2015batch} and a LeakyReLU
+activation with negative slope $0.1$, matching the paper's choice in the
+detection layers.
+
+\paragraph{Detection head.} The head is identical to the original paper.
+Flatten produces a $50\,176$-element vector, the first dense layer maps it
+to $4\,096$ with LeakyReLU and dropout~\citep{srivastava2014dropout}, and the
+final dense layer produces the $4\,410 = 7 \cdot 7 \cdot 90$ outputs. No
+activation is applied to the final layer: the loss operates directly on the
+raw logits, with no sigmoid on the box coordinates and no softmax on the
+class probabilities.
+
+\paragraph{Parameter accounting.} The first dense layer of the head accounts
+for roughly $205$\,M of the $248$\,M trainable parameters
+(\,$50\,176 \times 4\,096$\,). The ResNet18 trunk carries about $11.2$\,M, the
+adapter contributes $\sim 14$\,M, and the remainder is split between the
+final dense layer and the various biases and BN scale/offset terms. The
+disparity between the convolutional trunk and the dense head is a known
+weakness of the YOLOv1 design and one of the primary motivations for the
+fully convolutional rewrite in YOLOv2 and YOLOv3 \citep{redmon2018yolov3}.
+
+% -------------------------------------------------------------
+\subsection{Loss implementation}
+\label{sec:impl:loss}
+
+The loss is the five-term sum-of-squared-errors formulation from
+\citet{redmon2016you}. We implement it as a single \texttt{nn.Module} subclass
+(\texttt{src/loss.py}) operating on per-batch tensors. A condensed listing of
+the body is given in Listing~\ref{lst:loss-body}; we discuss four
+implementation details that are not visible from the mathematical formulation.
+
+\begin{lstlisting}[caption={Body of \texttt{YoloLoss.forward}, abbreviated for
+brevity. Auxiliary index variables and the IoU-based responsibility mask are
+omitted; the full source is in \texttt{src/loss.py}.},
+label=lst:loss-body]
+predictions = predictions.reshape(-1, S, S, C + 5*B)
+
+C = self.C
+OBJ_IDX    = C
+BOX1_SLICE = slice(C + 1, C + 5)
+CONF2_IDX  = C + 5
+BOX2_SLICE = slice(C + 6, C + 10)
+
+iou_b1   = iou(predictions[..., BOX1_SLICE], target[..., BOX1_SLICE])
+iou_b2   = iou(predictions[..., BOX2_SLICE], target[..., BOX1_SLICE])
+best_box = torch.max(torch.stack([iou_b1, iou_b2], dim=0), dim=0).indices
+
+exists_box = target[..., OBJ_IDX:OBJ_IDX+1]
+
+# Box loss (xy directly, wh under sign(.)*sqrt(|.|))
+box_pred = exists_box * (best_box * predictions[..., BOX2_SLICE]
+                       + (1 - best_box) * predictions[..., BOX1_SLICE])
+box_tgt  = exists_box * target[..., BOX1_SLICE]
+
+xy_pred       = box_pred[..., 0:2]
+wh_pred_sqrt  = torch.sign(box_pred[..., 2:4]) * torch.sqrt(
+                    torch.abs(box_pred[..., 2:4]) + 1e-6)
+box_pred      = torch.cat([xy_pred, wh_pred_sqrt], dim=-1)
+box_tgt       = torch.cat([box_tgt[..., 0:2],
+                           torch.sqrt(box_tgt[..., 2:4] + 1e-6)], dim=-1)
+box_loss  = mse(box_pred, box_tgt)
+
+# Object + no-object + class losses (see src/loss.py for full code)
+\end{lstlisting}
+
+\paragraph{Sum reduction.} We use \texttt{nn.MSELoss(reduction="sum")} rather
+than \texttt{"mean"}. The paper specifies a sum of squared errors, and the
+relative weighting between the five terms is calibrated for sum reduction:
+$\lambda_{\text{coord}} = 5$ is meaningful only if all of the coordinate
+summands are accumulated rather than averaged. The consequence is that the
+absolute loss magnitude scales with batch size and with grid density; at our
+$S = 7$, $B = 2$, $C = 80$ and batch size $32$, the per-batch loss settles in
+the low hundreds (as seen in V5 and V6 in
+Section~\ref{sec:experiments:setup}).
+
+\paragraph{Safe square-root on width and height.} The paper applies
+$\sqrt{w}$ and $\sqrt{h}$ to equalise the gradient contribution of small and
+large boxes. The network output is unconstrained, however, so any negative
+prediction during early training would crash the square root. We therefore
+compute $\operatorname{sign}(x) \cdot \sqrt{|x| + \varepsilon}$ with
+$\varepsilon = 10^{-6}$. The sign is preserved so that the gradient through
+the responsibility mask points the prediction back into the positive half-line
+on the next step, rather than being trapped by an \texttt{abs} symmetry. This
+trick is standard in published YOLO reimplementations but the choice of
+$\varepsilon$ location matters: $\sqrt{|x| + \varepsilon}$ is safer than
+$\sqrt{|x + \varepsilon|}$ near $x = -\varepsilon$.
+
+\paragraph{Avoiding in-place writes on autograd tensors.} An earlier version
+of the code transformed \texttt{box\_predictions[..., 2:4]} in place:
+\begin{lstlisting}
+box_predictions[..., 2:4] = torch.sign(...) * torch.sqrt(...)
+\end{lstlisting}
+\noindent This silently severs the autograd graph through the modified slice:
+no exception is raised, the loss value is correct, but the backward pass
+through the $w, h$ pathway returns zero gradients. The current implementation
+re-assembles the four-component box tensor via \texttt{torch.cat} along the
+channel dimension, which preserves the graph. This was fixed in the same
+commit cycle as the bug investigation of
+Section~\ref{sec:bug-investigation}; we mention it here because it is part of
+the implementation invariants that future modifications must respect.
+
+\paragraph{Indices derived from $C$.} As discussed at length in
+Section~\ref{sec:bug:loss-indices}, the indices into the per-cell prediction
+tensor are computed from \texttt{self.C} rather than hardcoded. The same
+class can therefore be instantiated for any $C$ without code changes, which
+both fixes the original COCO bug and keeps the class testable on the
+$C\!=\!20$ VOC layout without modifications.
+
+% -------------------------------------------------------------
+\subsection{Training infrastructure}
+\label{sec:impl:training}
+
+The training loop (\texttt{src/train.py}) is written for multi-GPU operation
+under PyTorch's \texttt{DistributedDataParallel} (DDP) and launched with
+\texttt{torchrun}. In practice all six runs in this work used a single GPU,
+but the multi-process scaffolding (process group init, distributed sampler,
+rank-zero-only logging, rank-zero-only checkpointing) was retained so the
+loop could be scaled later without restructuring.
+
+\paragraph{Hardware.} V4--V6 ran on a Vast.ai pod with a single NVIDIA H200
+NVL (140\,GB HBM3) and node-local NVMe storage. Throughput at $S = 7$,
+$B = 2$, $C = 80$, batch size $32$ and input resolution $448\times 448$ was
+approximately $114$~seconds per epoch on the training split, or
+$\sim\!95$~minutes for $50$ epochs. V1--V3 ran on a different provider
+(RunPod) on a pod equipped with eight NVIDIA H100 GPUs, of which only one
+was effectively used because the storage substrate became the bottleneck
+before compute parallelism could be exploited; the configuration is
+discussed under ``Storage substrate, in passing'' below. Absolute timings
+for V1--V3 are not directly comparable to V4--V6 because the backbone, the
+iteration count, the GPU generation and the I/O path all differ.
+
+\paragraph{Software stack.} PyTorch 2.4.1 with CUDA 12.4 on Python 3.12.
+Mixed precision is handled by \texttt{torch.amp.autocast(device\_type="cuda",
+dtype=torch.float16)} for the forward pass and the loss, with the optimiser
+maintaining a float32 master copy of the weights via
+\texttt{torch.amp.GradScaler}. Gradients are unscaled before clipping so that
+the clip threshold is interpreted in real magnitude rather than in scaled
+units.
+
+\paragraph{Optimiser and schedule.} Stochastic gradient descent with momentum
+$0.9$ and weight decay $5\!\times\!10^{-4}$, applied uniformly to every
+parameter (we do not use parameter groups with a smaller learning rate on the
+backbone). The schedule is a three-epoch linear warm-up from $0$ to the peak
+learning rate, followed by cosine annealing to $10^{-5}$
+\citep{loshchilov2017sgdr}. The peak rate is $10^{-4}$ in V4--V6 and varies
+across V1--V3 as described in Section~\ref{sec:experiments:setup}.
+
+\paragraph{Checkpoints.} The trainer writes three kinds of checkpoint per run:
+a rolling \texttt{last.pth} updated every epoch, a snapshot
+\texttt{epoch\_NNN.pth} every two epochs, and a \texttt{best.pth} updated only
+when the validation loss strictly improves. Each ``full'' checkpoint contains
+the model state dict, the optimiser state, the AMP scaler state, the epoch
+number and the train/validation losses, so a run can be resumed exactly
+(this is how V6 resumes from V5). For evaluation we accept both ``full''
+checkpoints and ``clean'' checkpoints that are pure state dicts; the
+distinction is detected by the presence of the \texttt{model\_state\_dict} key
+and handled in \texttt{scripts/evaluate.py} and
+\texttt{scripts/visualize\_prediction.py}.
+
+\paragraph{Storage substrate, in passing.} An earlier attempt to host V1--V3
+on a single RunPod pod equipped with $8\!\times$ NVIDIA H100 GPUs and
+MooseFS-backed distributed storage was abandoned after the COCO unzip step
+repeatedly placed worker processes in uninterruptible (\texttt{D}-state)
+sleep, requiring pod reboots and preventing the eight-GPU configuration from
+ever being exercised in a meaningful training run. The relevant lesson is
+that a $26$~GB dataset of small files benefits substantially from a local
+NVMe rather than a network filesystem: switching to a node-local NVMe (which
+the Vast.ai pod used for V4--V6 provides natively) was the single largest
+engineering improvement of the project, more impactful than any of the
+architectural changes made between V1 and V4.
+
+% -------------------------------------------------------------
+\subsection{Evaluation pipeline}
+\label{sec:impl:eval}
+
+Evaluation is performed offline by \texttt{scripts/evaluate.py} against the
+test split. The script loads a checkpoint, iterates over the test
+\texttt{DataLoader} with \texttt{shuffle=False} (so that the bookkeeping
+indices are deterministic), and for each batch performs the following steps.
+
+\begin{enumerate}
+    \item Forward pass under \texttt{torch.no\_grad}, producing the flat
+        $(B, 4410)$ output tensor.
+    \item Per-cell decoding via \texttt{utils.cellboxes\_to\_boxes}, which
+        reshapes to $(B, 7, 7, 90)$, selects the higher-confidence of the two
+        candidate boxes per cell, applies the cell-to-image coordinate
+        transform discussed in Section~\ref{sec:bug:wh-decoding} (the $1/S$
+        factor on $x, y$ only, post-fix), and returns a list of $49$ candidate
+        boxes per image in the form
+        $[\text{class},\,\text{prob},\,x,\,y,\,w,\,h]$.
+    \item Per-class non-maximum suppression, parameterised by a probability
+        threshold (the smallest predicted confidence to consider, set to
+        $0.1$ and $0.3$ in the reported results) and an IoU threshold (the
+        overlap above which a lower-confidence prediction of the same class
+        is discarded, fixed at $0.5$).
+    \item Aggregation of all surviving predictions across the entire test
+        split into a global list of $[\text{image\_idx}, \text{class},
+        \text{prob}, x, y, w, h]$ tuples.
+    \item Extraction of the corresponding ground-truth list from the target
+        tensors, also indexed by \texttt{image\_idx}.
+    \item Computation of mean Average Precision via
+        \texttt{metrics.mean\_average\_precision}, which sorts each class's
+        predictions by confidence, walks them in descending order while
+        marking each as a true positive (if it overlaps an unclaimed GT of
+        the same class with IoU above the threshold) or false positive, and
+        integrates the resulting precision--recall curve per class with the
+        trapezoidal rule. The final mAP is the mean of the per-class AP over
+        the 80 classes.
+\end{enumerate}
+
+\paragraph{One implementation detail.} The mAP code skips classes with zero
+ground-truth instances in the evaluated split rather than counting them as
+AP~$=$~0. On COCO this never triggers, because every class has at least one
+test instance, but it would change the denominator if the same code were
+applied to a smaller benchmark.
+
+\paragraph{Reproducibility.} The dataset split is fixed by seed~$42$ in
+\texttt{scripts/prepare\_splits.py}, the test data loader uses
+\texttt{shuffle=False}, NMS is deterministic, and the loss/decoding code
+contains no stochastic elements. Re-running the evaluation script on the
+same checkpoint and the same hardware reproduces the reported mAP exactly.

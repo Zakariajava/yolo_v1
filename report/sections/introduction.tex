@@ -1,0 +1,146 @@
+% =============================================================
+%  Section: Introduction
+% =============================================================
+
+Object detection is one of the canonical problems of computer vision. Given
+an input image, the task is to enumerate the objects present, classify each
+of them into one of a fixed set of categories, and localise each with a
+bounding box. The output is therefore variable-length and structured, which
+distinguishes detection from image classification (fixed-length output) and
+from semantic segmentation (one prediction per pixel). The combination of
+classification and localisation has been a productive testbed for
+representation learning since the resurgence of deep convolutional networks
+in the early 2010s~\citep{krizhevsky2012imagenet,russakovsky2015imagenet},
+and remains a core capability underlying applications from autonomous
+driving to medical imaging to industrial inspection.
+
+% -------------------------------------------------------------
+\subsection{Historical context}
+\label{sec:intro:history}
+
+Two algorithmic families have dominated the deep-learning era of object
+detection, with markedly different trade-offs in accuracy, speed and
+implementation complexity.
+
+\paragraph{Two-stage detectors.}
+The first wave, beginning with R-CNN~\citep{girshick2014rich}, decomposes the
+problem into two sequential stages: first generate a set of candidate
+regions where objects might be present, then classify each candidate
+independently with a convolutional network. R-CNN's region proposal
+mechanism (selective search) was external and expensive; its successors
+Fast R-CNN~\citep{girshick2015fast} and
+Faster R-CNN~\citep{ren2015faster} progressively absorbed the proposal step
+into the network itself, trading the discrete proposal cascade for a learnt
+region proposal network and shared convolutional features. Two-stage
+detectors typically achieve the highest localisation accuracy on standard
+benchmarks, at the cost of an inference path that touches every proposal at
+least twice.
+
+\paragraph{Single-stage detectors.} The second wave, of which
+YOLOv1~\citep{redmon2016you} and SSD~\citep{liu2016ssd} are the canonical
+representatives, reformulates detection as a single dense regression problem
+on a fixed spatial grid. The network produces, in a single forward pass,
+a complete tensor whose channels jointly encode class scores, box
+parameters and per-box confidence at every cell of the grid. There is no
+proposal stage and no per-region classifier; the entire predicted set of
+detections is read off a single output tensor and filtered by non-maximum
+suppression. Single-stage detectors are typically faster than two-stage
+detectors by an order of magnitude and amenable to real-time deployment;
+the original YOLO paper highlights this trade-off in its title.
+
+The success of YOLO sparked a sustained research effort that produced
+YOLOv2, YOLOv3~\citep{redmon2018yolov3} and a long line of community
+descendants, each incorporating ideas (anchor boxes, multi-scale prediction,
+fully convolutional heads, focal loss, mosaic augmentation) that
+incrementally close the accuracy gap with two-stage detectors while
+preserving the single-pass inference structure. By the time of writing, the
+YOLO family remains the practical default for real-time detection on commodity
+hardware.
+
+% -------------------------------------------------------------
+\subsection{Why study YOLOv1 specifically}
+\label{sec:intro:why-yolov1}
+
+This work targets the original YOLOv1 paper for three reasons.
+
+First, it is the simplest detector in the single-stage family. The network
+is a feedforward stack of convolutions followed by two dense layers; the
+output is a single tensor; the loss is a single sum-of-squared-errors
+expression with five clearly delineated terms. Everything that descendants
+add (anchors, FPN, multi-scale outputs, focal loss) is absent. A successful
+reproduction therefore exercises every concept that subsequent work assumes
+the reader already understands, without yet introducing the optimisations
+that obscure them.
+
+Second, the paper is unusually clear about its own limitations. Section~4.4
+of \citet{redmon2016you} enumerates failure modes (clusters of small objects,
+unusual aspect ratios, coarse spatial localisation) that are inherent to
+the YOLOv1 formulation and that are still useful to study in their original
+form, because they motivate every architectural change in the family's later
+versions.
+
+Third, the implementation effort is small enough to be auditable
+end-to-end by a single person, which is the prerequisite for the kind of
+bug-forensics narrative that this work emphasises in
+Section~\ref{sec:bug-investigation}. The audit identifies two implementation
+mistakes that the unit-test suite did not catch, and uses them to argue for
+a specific style of quantitative test that production deep-learning codebases
+benefit from but tend not to write.
+
+% -------------------------------------------------------------
+\subsection{Objectives of this work}
+\label{sec:intro:objectives}
+
+The objectives are deliberately reproductive rather than novel. They are:
+
+\begin{enumerate}
+    \item \emph{Reproduce the YOLOv1 pipeline end-to-end in PyTorch.} The
+        full system---dataset class, model, loss, distributed training loop
+        with mixed precision, mAP evaluator and real-time inference
+        script---is written from scratch and lives in the repository
+        associated with this work. The implementation follows
+        \citet{redmon2016you} on every point where the paper is explicit and
+        is documented at the points where it is not.
+    \item \emph{Port the paper's VOC setting ($C = 20$) to COCO 2017
+        ($C = 80$).} The architectural changes are minimal (an output-layer
+        widening and a per-cell tensor-layout adjustment) but the training
+        regime is substantially harder, as Section~\ref{sec:disc:why-low}
+        analyses in detail.
+    \item \emph{Document the engineering reality of training a detector from
+        scratch.} This includes the four-version iteration on hyper-parameters
+        that did not solve the problem
+        (Sections~\ref{sec:experiments:v1}--\ref{sec:experiments:v4}), the
+        bug audit that did (Section~\ref{sec:bug-investigation}), the
+        post-fix runs that produced the first non-zero metric
+        (Sections~\ref{sec:experiments:v5}--\ref{sec:experiments:v6}), and
+        the per-class breakdown that motivates the future-work programme of
+        Section~\ref{sec:disc:future}.
+\end{enumerate}
+
+We do not claim competitiveness with current detectors, and we do not
+present any methodological novelty. The contribution of this work is the
+auditability of a complete YOLOv1 pipeline targeted at COCO, together with
+the documentation of two failure modes that are easy to introduce, hard to
+detect from training curves, and worth flagging to anyone reproducing a
+detector for the first time.
+
+% -------------------------------------------------------------
+\subsection{Outline}
+\label{sec:intro:outline}
+
+Section~\ref{sec:theoretical_framework} formalises the problem and the
+YOLOv1 loss, summarising the parts of \citet{redmon2016you} that subsequent
+sections rely on. Section~\ref{sec:impl:dataset} describes the dataset
+preparation pipeline; Section~\ref{sec:impl:model} introduces the model
+architecture as a single TikZ diagram; Sections~\ref{sec:impl:loss}
+through~\ref{sec:impl:eval} cover the loss implementation, the training
+infrastructure and the evaluation pipeline. Section~\ref{sec:experimentation}
+is the substantive narrative of the work: six training runs, the failure
+of the first four, the audit that explained the failures, and the two
+runs that produced the first non-zero detection metric. Section~\ref{sec:results}
+reports the headline figures, the per-class breakdown, inference latency and
+a side-by-side comparison with the original paper. Section~\ref{sec:disc:why-low}
+discusses the limitations and the natural continuation of the work, and the
+Conclusions restate the central finding. Two appendices contain the full
+per-class AP table and a side-by-side listing of the loss function before
+and after the index fix.

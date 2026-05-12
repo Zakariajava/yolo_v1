@@ -1,0 +1,146 @@
+\documentclass[11pt,a4paper]{article}
+
+% ---------- Encoding and language ----------
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+\usepackage{lmodern}
+\usepackage{microtype}
+
+% ---------- Layout ----------
+\usepackage[margin=1in]{geometry}
+\usepackage{setspace}
+\onehalfspacing
+\usepackage{authblk}
+
+% ---------- Math and symbols ----------
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+
+% ---------- Tables and figures ----------
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{float}
+
+% ---------- Bibliography: APA style ----------
+\usepackage[round,authoryear]{natbib}
+\bibliographystyle{apalike}
+
+% ---------- Code listings ----------
+\usepackage{listings}
+\usepackage{xcolor}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codegreen}{rgb}{0.0,0.5,0.0}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{codebg}{rgb}{0.97,0.97,0.97}
+\lstdefinestyle{pystyle}{
+    backgroundcolor=\color{codebg},
+    commentstyle=\color{codegray}\itshape,
+    keywordstyle=\color{blue},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,
+    breaklines=true,
+    captionpos=b,
+    keepspaces=true,
+    numbers=left,
+    numbersep=5pt,
+    numberstyle=\tiny\color{codegray},
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=4,
+    frame=single,
+    rulecolor=\color{black!20},
+    language=Python,
+}
+\lstset{style=pystyle}
+
+% ---------- TikZ ----------
+\usepackage{tikz}
+\usetikzlibrary{positioning, arrows.meta, shapes.geometric, calc, fit}
+
+% ---------- Links ----------
+\usepackage[colorlinks=true,
+            linkcolor=black,
+            citecolor=blue!50!black,
+            urlcolor=blue!50!black]{hyperref}
+
+% ---------- TODO notes (remove before final submission) ----------
+\usepackage{xcolor}
+\newcommand{\todo}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}
+
+% ---------- Paths for figures ----------
+\graphicspath{{../artefacts/}{../artefacts/predictions/good/}%
+              {../artefacts/predictions/medium/}{../artefacts/predictions/bad/}%
+              {figures/}}
+
+% ============================================================
+% Title and authors
+% ============================================================
+\title{\textbf{YOLOv1 from Scratch on COCO 2017:\\
+A Reproduction Study with Bug Forensics}}
+
+\author[1]{Zakaria Abouhammadi}
+\affil[1]{Universitat de Val\`encia, Escola T\`ecnica Superior d'Enginyeria}
+\date{May 2026}
+
+\begin{document}
+
+\maketitle
+
+% ============================================================
+% Abstract
+% ============================================================
+\begin{abstract}
+\input{sections/abstract}
+\end{abstract}
+
+% ============================================================
+% Sections
+% ============================================================
+\section{Introduction}
+\input{sections/introduction}
+
+\section{Theoretical framework}
+\input{sections/theoretical_framework}
+
+\section{Implementation}
+\input{sections/implementation}
+
+\section{Experimentation}
+\label{sec:experimentation}
+\input{sections/experimentation}
+
+\section{Results}
+\label{sec:results}
+\input{sections/results}
+
+\section{Discussion}
+\input{sections/discussion}
+
+\section{Conclusions}
+\input{sections/conclusions}
+
+% ============================================================
+% Bibliography
+% ============================================================
+\bibliography{references}
+
+% ============================================================
+% Appendices
+% ============================================================
+\appendix
+\section{Per-class Average Precision (V6, full table)}
+\label{app:per-class-ap}
+\input{sections/appendix_per_class_ap}
+
+\section{Loss function: before and after the index fix}
+\label{app:loss-diff}
+\input{sections/appendix_loss_diff}
+
+\end{document}

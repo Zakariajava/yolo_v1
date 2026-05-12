@@ -1,0 +1,142 @@
+% =============================================================
+%  Appendix B: loss function before and after the index fix
+% =============================================================
+
+This appendix shows the body of \texttt{YoloLoss.forward} as it stood in
+runs V1--V4, where it produced $\mathrm{mAP}@0.5 = 0$ on COCO, alongside the
+post-fix version used in V5 and V6. The diagnostic and verification of the
+bug are discussed in Section~\ref{sec:bug:loss-indices}; the purpose of the
+appendix is to make the diff itself auditable as a single block.
+
+\paragraph{Buggy version (V1--V4).} The literal indices $20$, $21\!:\!25$,
+$25$, $26\!:\!30$ and $:\!20$ are correct for the Pascal VOC per-cell layout
+($C\!=\!20$, total $30$ channels) and incorrect for COCO ($C\!=\!80$, total
+$90$ channels). They point into the class-probability region of the COCO
+tensor rather than into the coordinate and confidence slots.
+
+\begin{lstlisting}[caption={Buggy body of \texttt{YoloLoss.forward}.},
+label=lst:loss-buggy]
+def forward(self, predictions, target):
+    predictions = predictions.reshape(-1, self.S, self.S, self.C + self.B * 5)
+
+    # IoU between predicted and GT boxes (GT box assumed at 21:25).
+    iou_b1 = iou(predictions[..., 21:25], target[..., 21:25])
+    iou_b2 = iou(predictions[..., 26:30], target[..., 21:25])
+    ious   = torch.stack([iou_b1, iou_b2], dim=0)
+    _, best_box = torch.max(ious, dim=0)
+
+    exists_box = target[..., 20:21]                      # "object exists" mask
+
+    # Box (xy, sqrt(wh)) loss
+    box_pred = exists_box * (best_box       * predictions[..., 26:30]
+                             + (1 - best_box) * predictions[..., 21:25])
+    box_tgt  = exists_box * target[..., 21:25]
+    box_pred[..., 2:4] = torch.sign(box_pred[..., 2:4]) * torch.sqrt(
+        torch.abs(box_pred[..., 2:4] + 1e-6))
+    box_tgt[...,  2:4] = torch.sqrt(box_tgt[..., 2:4] + 1e-6)
+    box_loss = mse(flatten(box_pred), flatten(box_tgt))
+
+    # Object confidence loss
+    pred_box = best_box       * predictions[..., 25:26] \
+             + (1 - best_box) * predictions[..., 20:21]
+    object_loss = mse(flatten(exists_box * pred_box),
+                      flatten(exists_box * target[..., 20:21]))
+
+    # No-object confidence loss (both predicted boxes)
+    no_object_loss  = mse(flatten((1 - exists_box) * predictions[..., 20:21]),
+                          flatten((1 - exists_box) * target[..., 20:21]))
+    no_object_loss += mse(flatten((1 - exists_box) * predictions[..., 25:26]),
+                          flatten((1 - exists_box) * target[..., 20:21]))
+
+    # Class loss
+    class_loss = mse(flatten(exists_box * predictions[..., :20]),
+                     flatten(exists_box * target[...,      :20]))
+
+    return (self.lambda_coord * box_loss
+            + object_loss
+            + self.lambda_noobj * no_object_loss
+            + class_loss)
+\end{lstlisting}
+
+\paragraph{Fixed version (V5--V6).} Every literal is replaced with a slice
+or index derived from \texttt{self.C}, the class loss is widened from
+\texttt{:20} to \texttt{:C}, and the in-place square-root assignment on
+\texttt{box\_pred[..., 2:4]} is replaced with a \texttt{torch.cat} of the
+$xy$ and the transformed $\sqrt{wh}$ slices, which preserves the autograd
+graph through the $w, h$ pathway.
+
+\begin{lstlisting}[caption={Fixed body of \texttt{YoloLoss.forward}.},
+label=lst:loss-fixed]
+def forward(self, predictions, target):
+    predictions = predictions.reshape(-1, self.S, self.S, self.C + self.B * 5)
+
+    C          = self.C
+    OBJ_IDX    = C
+    BOX1_SLICE = slice(C + 1, C + 5)
+    CONF2_IDX  = C + 5
+    BOX2_SLICE = slice(C + 6, C + 10)
+
+    iou_b1 = iou(predictions[..., BOX1_SLICE], target[..., BOX1_SLICE])
+    iou_b2 = iou(predictions[..., BOX2_SLICE], target[..., BOX1_SLICE])
+    ious   = torch.stack([iou_b1, iou_b2], dim=0)
+    _, best_box = torch.max(ious, dim=0)
+
+    exists_box = target[..., OBJ_IDX:OBJ_IDX+1]
+
+    # Box (xy, sqrt(wh)) loss --- rebuild the tensor with torch.cat
+    box_pred = exists_box * (best_box       * predictions[..., BOX2_SLICE]
+                             + (1 - best_box) * predictions[..., BOX1_SLICE])
+    box_tgt  = exists_box * target[..., BOX1_SLICE]
+
+    xy_pred      = box_pred[..., 0:2]
+    wh_pred_sqrt = torch.sign(box_pred[..., 2:4]) * torch.sqrt(
+                       torch.abs(box_pred[..., 2:4]) + 1e-6)
+    box_pred     = torch.cat([xy_pred, wh_pred_sqrt], dim=-1)
+
+    xy_tgt       = box_tgt[..., 0:2]
+    wh_tgt_sqrt  = torch.sqrt(box_tgt[..., 2:4] + 1e-6)
+    box_tgt      = torch.cat([xy_tgt, wh_tgt_sqrt], dim=-1)
+
+    box_loss = mse(flatten(box_pred), flatten(box_tgt))
+
+    # Object confidence loss
+    pred_box = best_box       * predictions[..., CONF2_IDX:CONF2_IDX+1] \
+             + (1 - best_box) * predictions[..., OBJ_IDX:OBJ_IDX+1]
+    object_loss = mse(flatten(exists_box * pred_box),
+                      flatten(exists_box * target[..., OBJ_IDX:OBJ_IDX+1]))
+
+    # No-object confidence loss (both predicted boxes)
+    no_object_loss  = mse(flatten((1 - exists_box) * predictions[..., OBJ_IDX:OBJ_IDX+1]),
+                          flatten((1 - exists_box) * target[...,      OBJ_IDX:OBJ_IDX+1]))
+    no_object_loss += mse(flatten((1 - exists_box) * predictions[..., CONF2_IDX:CONF2_IDX+1]),
+                          flatten((1 - exists_box) * target[...,      OBJ_IDX:OBJ_IDX+1]))
+
+    # Class loss --- all C classes, not the first 20
+    class_loss = mse(flatten(exists_box * predictions[..., :C]),
+                     flatten(exists_box * target[...,      :C]))
+
+    return (self.lambda_coord * box_loss
+            + object_loss
+            + self.lambda_noobj * no_object_loss
+            + class_loss)
+\end{lstlisting}
+
+\paragraph{Diff summary.} The semantic changes are:
+\begin{enumerate}
+    \item Five hardcoded literals
+        ($20$, $21\!:\!25$, $25$, $25\!:\!26$, $26\!:\!30$) replaced with
+        index variables derived from \texttt{self.C}.
+    \item The class-loss slice $\,:\!20$ widened to $\,:\!C$ so that all
+        eighty COCO classes contribute, not only the first twenty.
+    \item The in-place
+        \texttt{box\_pred[..., 2:4] = sign(.) * sqrt(.)} replaced with
+        \texttt{torch.cat([xy, sqrt(wh)], dim=-1)} so that autograd's
+        backward pass through the $w, h$ slice is preserved.
+\end{enumerate}
+
+\noindent The fix is purely local to \texttt{src/loss.py}; no other file in
+the codebase required changes for the loss fix to take effect. The companion
+fix to the post-processing function \texttt{convert\_cellboxes} (Bug~2,
+Section~\ref{sec:bug:wh-decoding}) is a separate one-line edit in
+\texttt{src/utils.py} that drops the spurious $1/S$ factor from the width
+and height of the decoded boxes.
