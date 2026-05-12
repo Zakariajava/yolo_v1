@@ -42,5 +42,4 @@ v3_run/
 trained_model/
 
 # Artefacts (generated outputs)
-artefacts/predictions/
 artefacts/samples/
