@@ -1,0 +1,81 @@
+class_idx,class_name,ap,num_gt
+22,zebra,0.3593,236
+6,train,0.3265,212
+23,giraffe,0.3107,225
+15,cat,0.2575,255
+4,airplane,0.1857,238
+53,pizza,0.1795,257
+21,bear,0.1698,67
+20,elephant,0.1634,223
+5,bus,0.1595,246
+61,toilet,0.1435,237
+59,bed,0.1215,215
+74,clock,0.0973,292
+3,motorcycle,0.0891,303
+16,dog,0.0826,310
+17,horse,0.0562,244
+75,vase,0.0553,227
+14,bird,0.0540,384
+11,stop sign,0.0502,76
+10,fire hydrant,0.0435,85
+77,teddy bear,0.0433,200
+19,cow,0.0397,261
+60,dining table,0.0376,585
+18,sheep,0.0373,473
+0,person,0.0350,8779
+7,truck,0.0228,357
+48,sandwich,0.0220,174
+30,skis,0.0185,250
+66,keyboard,0.0173,135
+63,laptop,0.0170,219
+37,surfboard,0.0165,215
+54,donut,0.0120,214
+13,bench,0.0110,362
+69,oven,0.0098,152
+72,refrigerator,0.0098,124
+27,tie,0.0087,269
+50,broccoli,0.0085,375
+62,tv,0.0084,265
+36,skateboard,0.0064,241
+46,banana,0.0053,399
+2,car,0.0052,1382
+41,cup,0.0035,665
+57,couch,0.0029,275
+47,apple,0.0028,155
+56,chair,0.0022,1336
+33,kite,0.0017,355
+49,orange,0.0016,185
+45,bowl,0.0015,557
+38,tennis racket,0.0015,168
+71,sink,0.0014,288
+1,bicycle,0.0014,300
+25,umbrella,0.0012,384
+55,cake,0.0007,267
+9,traffic light,0.0003,451
+8,boat,0.0002,370
+64,mouse,0.0002,97
+40,wine glass,0.0002,247
+39,bottle,0.0001,860
+51,carrot,0.0001,289
+67,cell phone,0.0001,279
+28,suitcase,0.0001,187
+73,book,0.0000,667
+58,potted plant,0.0000,368
+12,parking meter,0.0000,59
+24,backpack,0.0000,285
+26,handbag,0.0000,272
+29,frisbee,0.0000,117
+31,snowboard,0.0000,111
+32,sports ball,0.0000,231
+34,baseball bat,0.0000,145
+35,baseball glove,0.0000,108
+42,fork,0.0000,262
+43,knife,0.0000,251
+44,spoon,0.0000,190
+52,hot dog,0.0000,128
+65,remote,0.0000,242
+68,microwave,0.0000,81
+70,toaster,0.0000,9
+76,scissors,0.0000,78
+78,hair drier,0.0000,5
+79,toothbrush,0.0000,80

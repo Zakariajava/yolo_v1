@@ -1,0 +1,117 @@
+Per-class AP results
+======================================================================
+Checkpoint:      v6_run/best_v6.pth
+Split:           test
+Max samples:     6165
+Prob threshold:  0.3
+NMS IoU:         0.5
+mAP IoU:         0.5
+Total preds:     50649
+Total GT boxes:  31167
+Classes w/ GT:   80/80
+
+OVERALL mAP@0.5: 0.0381
+======================================================================
+
+All 80 classes sorted by AP (descending):
+----------------------------------------------------------------------
+Rank  Idx  Class                         AP    GT count
+----------------------------------------------------------------------
+   1   22  zebra                     0.3372         236
+   2    6  train                     0.3248         212
+   3   23  giraffe                   0.2988         225
+   4   15  cat                       0.2287         255
+   5    4  airplane                  0.1799         238
+   6   53  pizza                     0.1651         257
+   7    5  bus                       0.1595         246
+   8   20  elephant                  0.1466         223
+   9   21  bear                      0.1403          67
+  10   61  toilet                    0.1333         237
+  11   59  bed                       0.1017         215
+  12   74  clock                     0.0958         292
+  13    3  motorcycle                0.0855         303
+  14   16  dog                       0.0745         310
+  15   14  bird                      0.0529         384
+  16   17  horse                     0.0497         244
+  17   75  vase                      0.0458         227
+  18   11  stop sign                 0.0433          76
+  19   77  teddy bear                0.0389         200
+  20   60  dining table              0.0372         585
+  21   10  fire hydrant              0.0353          85
+  22   18  sheep                     0.0341         473
+  23    0  person                    0.0337        8779
+  24   19  cow                       0.0333         261
+  25    7  truck                     0.0228         357
+  26   30  skis                      0.0180         250
+  27   37  surfboard                 0.0152         215
+  28   66  keyboard                  0.0143         135
+  29   63  laptop                    0.0137         219
+  30   48  sandwich                  0.0100         174
+  31   69  oven                      0.0093         152
+  32   54  donut                     0.0082         214
+  33   13  bench                     0.0081         362
+  34   72  refrigerator              0.0063         124
+  35   62  tv                        0.0063         265
+  36   50  broccoli                  0.0062         375
+  37   36  skateboard                0.0053         241
+  38    2  car                       0.0051        1382
+  39   27  tie                       0.0047         269
+  40   46  banana                    0.0043         399
+  41   41  cup                       0.0027         665
+  42   57  couch                     0.0026         275
+  43   56  chair                     0.0019        1336
+  44   47  apple                     0.0017         155
+  45   49  orange                    0.0016         185
+  46   45  bowl                      0.0015         557
+  47   38  tennis racket             0.0015         168
+  48   33  kite                      0.0014         355
+  49   71  sink                      0.0012         288
+  50   25  umbrella                  0.0009         384
+  51    9  traffic light             0.0002         451
+  52   55  cake                      0.0002         267
+  53    1  bicycle                   0.0002         300
+  54   40  wine glass                0.0002         247
+  55    8  boat                      0.0001         370
+  56   39  bottle                    0.0001         860
+  57   51  carrot                    0.0001         289
+  58   73  book                      0.0000         667
+  59   12  parking meter             0.0000          59
+  60   24  backpack                  0.0000         285
+  61   26  handbag                   0.0000         272
+  62   28  suitcase                  0.0000         187
+  63   29  frisbee                   0.0000         117
+  64   31  snowboard                 0.0000         111
+  65   32  sports ball               0.0000         231
+  66   34  baseball bat              0.0000         145
+  67   35  baseball glove            0.0000         108
+  68   42  fork                      0.0000         262
+  69   43  knife                     0.0000         251
+  70   44  spoon                     0.0000         190
+  71   52  hot dog                   0.0000         128
+  72   58  potted plant              0.0000         368
+  73   64  mouse                     0.0000          97
+  74   65  remote                    0.0000         242
+  75   67  cell phone                0.0000         279
+  76   68  microwave                 0.0000          81
+  77   70  toaster                   0.0000           9
+  78   76  scissors                  0.0000          78
+  79   78  hair drier                0.0000           5
+  80   79  toothbrush                0.0000          80
+----------------------------------------------------------------------
+
+Summary by AP bucket (only classes with GT in this split):
+----------------------------------------------------------------------
+
+AP >= 0.20 (good): 4 classes
+  zebra, train, giraffe, cat
+
+0.10 <= AP < 0.20 (medium): 7 classes
+  airplane, pizza, bus, elephant, bear, toilet, bed
+
+0.01 <= AP < 0.10 (low): 18 classes
+  clock, motorcycle, dog, bird, horse, vase, stop sign, teddy bear, dining table, fire hydrant, sheep, person, cow, truck, skis, surfboard, keyboard, laptop
+
+AP < 0.01 (effectively 0): 51 classes
+  sandwich, oven, donut, bench, refrigerator, tv, broccoli, skateboard, car, tie, banana, cup, couch, chair, apple, orange, bowl, tennis racket, kite, sink, umbrella, traffic light, cake, bicycle, wine glass, boat, bottle, carrot, book, parking meter, backpack, handbag, suitcase, frisbee, snowboard, sports ball, baseball bat, baseball glove, fork, knife, spoon, hot dog, potted plant, mouse, remote, cell phone, microwave, toaster, scissors, hair drier, toothbrush
+
+======================================================================
