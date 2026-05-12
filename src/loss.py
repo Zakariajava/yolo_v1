@@ -44,23 +44,28 @@ class YoloLoss(nn.Module):
         # ============================ #
         # Box coordinates Loss         #
         # ============================ #
-        
-        # Choose the "responsible" box (the one with higher IoU).
+
         box_predictions = exists_box * (
-             best_box * predictions[..., BOX2_SLICE]
+            best_box * predictions[..., BOX2_SLICE]
             + (1 - best_box) * predictions[..., BOX1_SLICE]
         )
-        
+
         box_targets = exists_box * target[..., BOX1_SLICE]
-   
+
         # Take square root of w and h (paper's trick to weight small/large boxes equally).
         # Use sign(x) * sqrt(|x|) to handle negative predictions without NaN.
-        box_predictions[..., 2:4] = torch.sign(box_predictions[..., 2:4]) * torch.sqrt(
+        # IMPORTANT: build a new tensor with torch.cat instead of in-place assignment,
+        # because in-place ops break the autograd graph when the source tensors carry gradients.
+        xy_pred = box_predictions[..., 0:2]
+        wh_pred_sqrt = torch.sign(box_predictions[..., 2:4]) * torch.sqrt(
             torch.abs(box_predictions[..., 2:4]) + 1e-6
         )
-        
-        box_targets[..., 2:4] = torch.sqrt(box_targets[..., 2:4] + 1e-6)
-        
+        box_predictions = torch.cat([xy_pred, wh_pred_sqrt], dim=-1)
+
+        xy_target = box_targets[..., 0:2]
+        wh_target_sqrt = torch.sqrt(box_targets[..., 2:4] + 1e-6)
+        box_targets = torch.cat([xy_target, wh_target_sqrt], dim=-1)
+
         # Flatten (N, S, S, 4) → (N*S*S, 4) and compute MSE.
         box_loss = self.mse(
             torch.flatten(box_predictions, end_dim=-2),
