@@ -139,39 +139,43 @@ def convert_cellboxes(predictions, S=7, C=80, B=2):
     predictions = predictions.to("cpu")
     batch_size = predictions.shape[0]
     predictions = predictions.reshape(batch_size, S, S, C + 5 * B)
-
+    
     # extract the two boxes from each cell
     bboxes1 = predictions[..., C+1:C+5]    # box 1: (x, y, w, h) at indices C+1..C+4
     bboxes2 = predictions[..., C+6:C+10]   # box 2: (x, y, w, h) at indices C+6..C+9
-
+    
     # pick the box with higher confidence per cell
     scores = torch.cat(
         (predictions[..., C].unsqueeze(0), predictions[..., C+5].unsqueeze(0)), dim=0
     )
     best_box = scores.argmax(0).unsqueeze(-1)
     best_boxes = bboxes1 * (1 - best_box) + best_box * bboxes2
-
-    # convert relative-to-cell coordinates to relative-to-image
+    
+    # x and y are stored as offsets inside the cell, so we shift by the cell index
+    # and divide by S to get image-relative coordinates.
     cell_indices = torch.arange(S).repeat(batch_size, S, 1).unsqueeze(-1)
     x = 1 / S * (best_boxes[..., :1] + cell_indices)
     y = 1 / S * (best_boxes[..., 1:2] + cell_indices.permute(0, 2, 1, 3))
-    w_y = 1 / S * best_boxes[..., 2:4]
 
-    converted_bboxes = torch.cat((x, y, w_y), dim=-1)
+    # w and h are already image-relative in the target (w_norm = w_pixels / image_width),
+    # so they pass through unchanged.
+    w_h = best_boxes[..., 2:4]
 
+    converted_bboxes = torch.cat((x, y, w_h), dim=-1)
+    
     # predicted class is argmax of class probabilities
     predicted_class = predictions[..., :C].argmax(-1).unsqueeze(-1)
-
+    
     # best confidence (from the chosen box)
     best_confidence = torch.max(
         predictions[..., C], predictions[..., C+5]
     ).unsqueeze(-1)
-
+    
     # pack as [class, prob, x, y, w, h]
     converted_preds = torch.cat(
         (predicted_class, best_confidence, converted_bboxes), dim=-1
     )
-
+    
     return converted_preds.reshape(batch_size, S * S, 6)
 
 def cellboxes_to_boxes(out, S=7):
